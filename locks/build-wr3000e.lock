@@ -1,0 +1,41 @@
+# Pinned inputs for reproducible wr3000e OpenWrt builds.
+
+OPENWRT_REPO_URL='https://git.openwrt.org/openwrt/openwrt.git'
+OPENWRT_TAG='v25.12.2'
+OPENWRT_REF='d266501ad6188cce279a487b1ce61f4f327cd496'
+
+FEED_PACKAGES_URL='https://git.openwrt.org/feed/packages.git'
+FEED_PACKAGES_REF='268d92d3d46147efe1e81892e3a618f8bbd4806b'
+
+FEED_LUCI_URL='https://git.openwrt.org/project/luci.git'
+FEED_LUCI_REF='c8e95f1d9d867743966e0c51dc2ce48cb5bf282f'
+
+FEED_ROUTING_URL='https://git.openwrt.org/feed/routing.git'
+FEED_ROUTING_REF='5b23ea12d417e5dba99788c5b34abdae81cccf33'
+
+FEED_TELEPHONY_URL='https://git.openwrt.org/feed/telephony.git'
+FEED_TELEPHONY_REF='2618106d5846a4a542fdf5809f0d3ed228ce439b'
+
+FEED_VIDEO_URL='https://github.com/openwrt/video.git'
+FEED_VIDEO_REF='094bf58da6682f895255a35a84349a79dab4bf95'
+
+PATCH_SOURCE='patches/subsys/999-mac80211-ft-defer-preassoc-key-upload.patch'
+PATCH_DEST='package/kernel/mac80211/patches/subsys/999-mac80211-ft-defer-preassoc-key-upload.patch'
+PATCH_SHA256='434abdac5420c2b28b189205f13f2c4a2cdc09c60d6ab77a153166e7d97883d4'
+
+CONFIG_FRAGMENT='devices/wr3000e/diffconfig'
+WORLD_SOURCE='devices/wr3000e/apk-installed-and-world.txt'
+REFERENCE_MANIFEST='devices/wr3000e/installed.manifest'
+
+TARGET='mediatek'
+SUBTARGET='filogic'
+DEVICE_ID='cudy_wr3000e-v1'
+
+DEFAULT_WORK_ROOT='build'
+DEFAULT_CACHE_ROOT='cache'
+DEFAULT_DOWNLOAD_JOBS='8'
+
+EXTRA_CONFIG_LINES=(
+  'CONFIG_PACKAGE_kmod-crypto-acompress=y'
+  'CONFIG_PACKAGE_kmod-lib-lzo=y'
+)

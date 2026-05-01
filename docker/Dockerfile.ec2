@@ -1,0 +1,79 @@
+ARG BUILDER_BASE_IMAGE=ubuntu:noble-20260410
+FROM ${BUILDER_BASE_IMAGE}
+
+ENV DEBIAN_FRONTEND=noninteractive
+ARG UBUNTU_SNAPSHOT=20260410T000000Z
+
+RUN find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -print0 | \
+      xargs -0 -r sed -i \
+        -e "s|http://archive.ubuntu.com/ubuntu/|http://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT}/|g" \
+        -e "s|https://archive.ubuntu.com/ubuntu/|http://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT}/|g" \
+        -e "s|http://security.ubuntu.com/ubuntu/|http://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT}/|g" \
+        -e "s|https://security.ubuntu.com/ubuntu/|http://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT}/|g" \
+        -e "s|http://ports.ubuntu.com/ubuntu-ports/|http://snapshot.ubuntu.com/ubuntu-ports/${UBUNTU_SNAPSHOT}/|g" \
+        -e "s|https://ports.ubuntu.com/ubuntu-ports/|http://snapshot.ubuntu.com/ubuntu-ports/${UBUNTU_SNAPSHOT}/|g" && \
+    printf 'Acquire::Check-Valid-Until "false";\n' >/etc/apt/apt.conf.d/99snapshot-valid-until && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+      bash \
+      bc \
+      bison \
+      build-essential \
+      bzip2 \
+      ca-certificates \
+      ccache \
+      clang \
+      cpio \
+      curl \
+      file \
+      flex \
+      g++ \
+      g++-multilib \
+      gawk \
+      gcc-multilib \
+      gettext \
+      git \
+      gperf \
+      help2man \
+      libelf-dev \
+      libncurses-dev \
+      libpython3-dev \
+      libssl-dev \
+      libzstd-dev \
+      make \
+      ninja-build \
+      patch \
+      perl \
+      pkgconf \
+      python3 \
+      python3-pyelftools \
+      python3-setuptools \
+      qemu-utils \
+      quilt \
+      rsync \
+      scons \
+      subversion \
+      swig \
+      tar \
+      time \
+      unzip \
+      wget \
+      xsltproc \
+      xz-utils \
+      zip \
+      zlib1g-dev \
+      zstd && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN useradd --create-home --shell /bin/bash builder && \
+    install -d -o builder -g builder /workspace /cache
+
+USER builder
+WORKDIR /workspace
+
+ENV CCACHE_DIR=/cache/ccache
+ENV HOME=/home/builder
+
+VOLUME ["/workspace", "/cache"]
+
+CMD ["/bin/bash"]
