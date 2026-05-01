@@ -46,9 +46,15 @@ To add another router:
 
 EC2 orchestration:
 - `scripts/orchestrate-ec2-build.sh` uploads a fresh snapshot of this repo to the EC2 host, prepares a per-run remote workspace, builds `docker/Dockerfile.ec2`, and starts the image build in a detached `tmux` session.
+- The upload snapshot contains tracked repo files by default. Pass
+  `--include-untracked` only when intentionally sending untracked, non-ignored
+  local files to the EC2 host.
 - By default it auto-installs `tmux` and Docker on the EC2 host if they are
   missing. It supports hosts with `apt-get`, `dnf`, or `yum`; use
   `--no-install-prereqs` to disable that.
+- Docker build and run use `--platform linux/amd64` by default so EC2 host
+  architecture does not silently change the builder environment. Override with
+  `--platform linux/arm64` only when intentionally using an arm64 builder.
 - The EC2 Docker builder uses `ubuntu:noble-20260410` and the Ubuntu
   `20260410T000000Z` apt snapshot by default. Override with
   `--builder-base-image` or `--ubuntu-snapshot` only when intentionally moving

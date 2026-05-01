@@ -289,6 +289,7 @@ routing_ref=${FEED_ROUTING_REF}
 telephony_ref=${FEED_TELEPHONY_REF}
 video_ref=${FEED_VIDEO_REF}
 patch_sha256=${PATCH_SHA256}
+builder_platform=${BUILDER_PLATFORM:-unknown}
 sysupgrade_image=$(basename "$SYSUPGRADE_IMAGE")
 sysupgrade_sha256=${sysupgrade_sha}
 initramfs_image=$(basename "$INITRAMFS_IMAGE")

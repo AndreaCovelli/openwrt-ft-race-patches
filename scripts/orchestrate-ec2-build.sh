@@ -16,12 +16,14 @@ Options:
   --remote-root PATH        Remote workspace root. Default: ~/openwrt-ft-builds
   --session NAME            tmux session and build id. Default: <lock-stem>-<utc-timestamp>
   --image-tag TAG           Remote Docker image tag. Default: patch-fix-openwrt-builder
+  --platform PLATFORM       Docker build/run platform. Default: linux/amd64
   --builder-base-image REF  Docker base image override for Dockerfile.ec2.
   --ubuntu-snapshot TS      Ubuntu apt snapshot timestamp. Default comes from Dockerfile.ec2.
   --make-jobs N             Export MAKE_JOBS into the container build.
   --download-jobs N         Export DOWNLOAD_JOBS into the container build.
   --strict-manifest         Fail if built package manifest drifts. Default behavior.
   --no-strict-manifest      Report package drift without failing the build.
+  --include-untracked       Also upload untracked, non-ignored repo files.
   --install-prereqs         Install tmux and docker.io if missing. Default behavior.
   --no-install-prereqs      Fail instead of installing missing tmux/docker on the EC2 host.
   --help                    Show this message.
@@ -60,11 +62,13 @@ abs_repo_path() {
 REMOTE_ROOT='~/openwrt-ft-builds'
 SESSION_NAME=''
 IMAGE_TAG='patch-fix-openwrt-builder'
+BUILDER_PLATFORM='linux/amd64'
 BUILDER_BASE_IMAGE=''
 UBUNTU_SNAPSHOT=''
 MAKE_JOBS=''
 DOWNLOAD_JOBS=''
 STRICT_MANIFEST='1'
+INCLUDE_UNTRACKED='0'
 INSTALL_PREREQS='auto'
 
 POSITIONAL=()
@@ -83,6 +87,11 @@ while [[ $# -gt 0 ]]; do
     --image-tag)
       [[ $# -ge 2 ]] || die "--image-tag requires a value"
       IMAGE_TAG="$2"
+      shift 2
+      ;;
+    --platform)
+      [[ $# -ge 2 ]] || die "--platform requires a value"
+      BUILDER_PLATFORM="$2"
       shift 2
       ;;
     --builder-base-image)
@@ -111,6 +120,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-strict-manifest)
       STRICT_MANIFEST='0'
+      shift
+      ;;
+    --include-untracked)
+      INCLUDE_UNTRACKED='1'
       shift
       ;;
     --install-prereqs)
@@ -150,7 +163,7 @@ done
 SSH_TARGET="${POSITIONAL[0]}"
 LOCK_FILE="$(abs_repo_path "${POSITIONAL[1]}")"
 
-require_cmd bash date mktemp scp sed ssh tar
+require_cmd bash date git mktemp scp sed ssh tar
 
 [[ -f "$LOCK_FILE" ]] || die "lock file not found: $LOCK_FILE"
 case "$LOCK_FILE" in
@@ -179,6 +192,8 @@ case "$STRICT_MANIFEST" in
     die "strict manifest value must be 0 or 1"
     ;;
 esac
+
+[[ -n "$BUILDER_PLATFORM" ]] || die "--platform must not be empty"
 
 log() {
   printf '[%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*"
@@ -277,23 +292,27 @@ mkdir -p "$repo_dir" "$cache_dir" "$log_dir"
 printf '%s\n%s\n%s\n%s\n' "$remote_root" "$run_root" "$repo_dir" "$docker_mode" >"$run_root/.orchestrator-state"
 REMOTE
 
-log "Uploading repo snapshot to $SSH_TARGET"
 LOCAL_ARCHIVE="$(mktemp "${TMPDIR:-/tmp}/openwrt-ft-build.XXXXXXXX.tar.gz")"
+SNAPSHOT_FILE_LIST="$(mktemp "${TMPDIR:-/tmp}/openwrt-ft-files.XXXXXXXX")"
 REMOTE_ARCHIVE="/tmp/openwrt-ft-build-${SESSION_NAME}.tar.gz"
 cleanup() {
-  rm -f "$LOCAL_ARCHIVE"
+  rm -f "$LOCAL_ARCHIVE" "$SNAPSHOT_FILE_LIST"
 }
 trap cleanup EXIT
 
+if [[ "$INCLUDE_UNTRACKED" == '1' ]]; then
+  log "Uploading tracked and untracked non-ignored repo files to $SSH_TARGET"
+else
+  log "Uploading tracked repo snapshot to $SSH_TARGET"
+fi
+
 (
   cd "$REPO_ROOT"
-  tar \
-    --exclude='.git' \
-    --exclude='.codex' \
-    --exclude='build' \
-    --exclude='cache' \
-    --exclude='.DS_Store' \
-    -czf "$LOCAL_ARCHIVE" .
+  git ls-files -z >"$SNAPSHOT_FILE_LIST"
+  if [[ "$INCLUDE_UNTRACKED" == '1' ]]; then
+    git ls-files -z --others --exclude-standard >>"$SNAPSHOT_FILE_LIST"
+  fi
+  tar --null -czf "$LOCAL_ARCHIVE" --files-from "$SNAPSHOT_FILE_LIST"
 )
 
 scp "$LOCAL_ARCHIVE" "$SSH_TARGET:$REMOTE_ARCHIVE"
@@ -327,7 +346,8 @@ REMOTE_INFO="$(
     "$DOWNLOAD_JOBS" \
     "$STRICT_MANIFEST" \
     "$BUILDER_BASE_IMAGE" \
-    "$UBUNTU_SNAPSHOT" <<'REMOTE'
+    "$UBUNTU_SNAPSHOT" \
+    "$BUILDER_PLATFORM" <<'REMOTE'
 set -euo pipefail
 
 remote_root="$1"
@@ -339,6 +359,7 @@ download_jobs="$6"
 strict_manifest="$7"
 builder_base_image="$8"
 ubuntu_snapshot="$9"
+builder_platform="${10}"
 
 case "$remote_root" in
   "~") remote_root="$HOME" ;;
@@ -364,6 +385,7 @@ download_jobs_q="$(printf '%q' "$download_jobs")"
 strict_manifest_q="$(printf '%q' "$strict_manifest")"
 builder_base_image_q="$(printf '%q' "$builder_base_image")"
 ubuntu_snapshot_q="$(printf '%q' "$ubuntu_snapshot")"
+builder_platform_q="$(printf '%q' "$builder_platform")"
 docker_mode_q="$(printf '%q' "$docker_mode")"
 
 cat >"$launcher" <<EOF
@@ -381,6 +403,7 @@ download_jobs=$download_jobs_q
 strict_manifest=$strict_manifest_q
 builder_base_image=$builder_base_image_q
 ubuntu_snapshot=$ubuntu_snapshot_q
+builder_platform=$builder_platform_q
 docker_mode=$docker_mode_q
 
 case "\$docker_mode" in
@@ -396,7 +419,7 @@ case "\$docker_mode" in
     ;;
 esac
 
-docker_env=(-e CACHE_ROOT=/cache -e BUILD_ID="\$build_id")
+docker_env=(-e CACHE_ROOT=/cache -e BUILD_ID="\$build_id" -e BUILDER_PLATFORM="\$builder_platform")
 if [[ -n "\$make_jobs" ]]; then
   docker_env+=(-e MAKE_JOBS="\$make_jobs")
 fi
@@ -406,6 +429,10 @@ fi
 docker_env+=(-e STRICT_MANIFEST="\$strict_manifest")
 
 docker_build_args=()
+docker_platform_args=()
+if [[ -n "\$builder_platform" ]]; then
+  docker_platform_args+=(--platform "\$builder_platform")
+fi
 if [[ -n "\$builder_base_image" ]]; then
   docker_build_args+=(--build-arg "BUILDER_BASE_IMAGE=\$builder_base_image")
 fi
@@ -416,9 +443,10 @@ fi
 {
   cd "\$repo_dir"
   printf '[%s] building docker image %s\n' "\$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "\$image_tag"
-  "\${docker_cmd[@]}" build "\${docker_build_args[@]}" -f docker/Dockerfile.ec2 -t "\$image_tag" .
+  "\${docker_cmd[@]}" build "\${docker_platform_args[@]}" "\${docker_build_args[@]}" -f docker/Dockerfile.ec2 -t "\$image_tag" .
   printf '[%s] starting container build for %s\n' "\$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "\$lock_file"
   "\${docker_cmd[@]}" run --rm \\
+    "\${docker_platform_args[@]}" \\
     "\${docker_env[@]}" \\
     -v "\$repo_dir:/workspace" \\
     -v "\$cache_dir:/cache" \\
