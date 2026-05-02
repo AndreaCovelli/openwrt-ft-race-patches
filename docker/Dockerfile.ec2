@@ -4,6 +4,10 @@ FROM ${BUILDER_BASE_IMAGE}
 ENV DEBIAN_FRONTEND=noninteractive
 ARG UBUNTU_SNAPSHOT=20260410T000000Z
 
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
 RUN find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -print0 | \
       xargs -0 -r sed -i \
         -e "s|http://archive.ubuntu.com/ubuntu/|http://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT}/|g" \
@@ -21,7 +25,6 @@ RUN find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -print0 | \
       build-essential \
       bzip2 \
       ca-certificates \
-      ccache \
       clang \
       cpio \
       curl \
@@ -65,13 +68,17 @@ RUN find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -print0 | \
       zstd && \
     rm -rf /var/lib/apt/lists/*
 
-RUN useradd --create-home --shell /bin/bash builder && \
-    install -d -o builder -g builder /workspace /cache
+RUN if ! getent group 1000 >/dev/null; then \
+      groupadd --gid 1000 builder; \
+    fi && \
+    if ! getent passwd 1000 >/dev/null; then \
+      useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash builder; \
+    fi && \
+    install -d -o 1000 -g 1000 /workspace /cache /home/builder
 
-USER builder
+USER 1000:1000
 WORKDIR /workspace
 
-ENV CCACHE_DIR=/cache/ccache
 ENV HOME=/home/builder
 
 VOLUME ["/workspace", "/cache"]

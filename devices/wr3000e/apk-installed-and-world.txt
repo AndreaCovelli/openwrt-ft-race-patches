@@ -1,4 +1,4 @@
-apk-mbedtls-3.0.5-r3 aarch64_cortex-a53 {feeds/base/system/apk} (GPL-2.0-only) [installed]
+apk-mbedtls-3.0.5-r2 aarch64_cortex-a53 {feeds/base/system/apk} (GPL-2.0-only) [installed]
 attendedsysupgrade-common-9 noarch {feeds/packages/feeds/packages/utils/attendedsysupgrade-common} (GPL-2.0) [installed]
 base-files-1699~f505120278 aarch64_cortex-a53 {feeds/base/base-files} (GPL-2.0) [installed]
 busybox-1.37.0-r6 aarch64_cortex-a53 {feeds/base/utils/busybox} (GPL-2.0) [installed]
@@ -20,9 +20,8 @@ iwinfo-2026.01.14~f5dd57a8-r1 aarch64_cortex-a53 {feeds/base/network/utils/iwinf
 jansson4-2.14.1-r1 aarch64_cortex-a53 {feeds/base/libs/jansson} (MIT) [installed]
 jshn-2026.03.13~81563384-r2 aarch64_cortex-a53 {feeds/base/libs/libubox} (ISC) [installed]
 jsonfilter-2026.03.16~b9034210-r1 aarch64_cortex-a53 {feeds/base/utils/jsonfilter} (ISC) [installed]
-kernel-6.12.74~60d938adcb727697d3015e4285d4c290-r1 aarch64_cortex-a53 {feeds/base/kernel/linux} (GPL-2.0-only) [installed]
+kernel-6.12.74~f8127f4e841121b7a9126117c4b2fb3c-r1 aarch64_cortex-a53 {feeds/base/kernel/linux} (GPL-2.0-only) [installed]
 kmod-cfg80211-6.12.74.6.18.7-r1 aarch64_cortex-a53 {feeds/base/kernel/mac80211} (GPL-2.0-only) [installed]
-kmod-crypto-acompress-6.12.74-r1 aarch64_cortex-a53 {feeds/base/kernel/linux} (GPL-2.0-only) [installed]
 kmod-crypto-aead-6.12.74-r1 aarch64_cortex-a53 {feeds/base/kernel/linux} (GPL-2.0-only) [installed]
 kmod-crypto-authenc-6.12.74-r1 aarch64_cortex-a53 {feeds/base/kernel/linux} (GPL-2.0-only) [installed]
 kmod-crypto-ccm-6.12.74-r1 aarch64_cortex-a53 {feeds/base/kernel/linux} (GPL-2.0-only) [installed]
@@ -53,7 +52,6 @@ kmod-leds-gpio-6.12.74-r1 aarch64_cortex-a53 {feeds/base/kernel/linux} (GPL-2.0-
 kmod-lib-crc-ccitt-6.12.74-r1 aarch64_cortex-a53 {feeds/base/kernel/linux} (GPL-2.0-only) [installed]
 kmod-lib-crc-itu-t-6.12.74-r1 aarch64_cortex-a53 {feeds/base/kernel/linux} (GPL-2.0-only) [installed]
 kmod-lib-crc32c-6.12.74-r1 aarch64_cortex-a53 {feeds/base/kernel/linux} (GPL-2.0-only) [installed]
-kmod-lib-lzo-6.12.74-r1 aarch64_cortex-a53 {feeds/base/kernel/linux} (GPL-2.0-only) [installed]
 kmod-libphy-6.12.74-r1 aarch64_cortex-a53 {feeds/base/kernel/linux} (GPL-2.0-only) [installed]
 kmod-mac80211-6.12.74.6.18.7-r1 aarch64_cortex-a53 {feeds/base/kernel/mac80211} (GPL-2.0-only) [installed]
 kmod-mt76-connac-6.12.74.2026.03.19~39c960c3-r2 aarch64_cortex-a53 {feeds/base/kernel/mt76} (BSD-3-Clause-Clear) [installed]
@@ -103,24 +101,24 @@ libucode20230711-2026.01.16~85922056-r1 aarch64_cortex-a53 {feeds/base/utils/uco
 libudebug-2026.01.16~875e1a7a aarch64_cortex-a53 {feeds/base/libs/udebug} (GPL-2.0) [installed]
 libustream-mbedtls20201210-2026.03.01~99f1c0db-r1 aarch64_cortex-a53 {feeds/base/libs/ustream-ssl} (ISC) [installed]
 logd-2025.10.30~6f78fa49-r1 aarch64_cortex-a53 {feeds/base/system/ubox} (GPL-2.0) [installed]
-luci-26.086.74393~c8e95f1 noarch {feeds/luci/feeds/luci/collections/luci} (Apache-2.0) [installed]
-luci-app-attendedsysupgrade-26.086.74393~c8e95f1 noarch {feeds/luci/feeds/luci/applications/luci-app-attendedsysupgrade} (GPL-2.0) [installed]
-luci-app-firewall-26.086.74393~c8e95f1 noarch {feeds/luci/feeds/luci/applications/luci-app-firewall} (Apache-2.0) [installed]
-luci-app-package-manager-26.086.74393~c8e95f1 noarch {feeds/luci/feeds/luci/applications/luci-app-package-manager} (Apache-2.0) [installed]
-luci-app-usteer-26.086.74393~c8e95f1 noarch {feeds/luci/feeds/luci/applications/luci-app-usteer} (Apache-2.0) [installed]
-luci-app-watchcat-26.086.74393~c8e95f1 noarch {feeds/luci/feeds/luci/applications/luci-app-watchcat} (Apache-2.0) [installed]
-luci-app-wifischedule-26.086.74393~c8e95f1 noarch {feeds/luci/feeds/luci/applications/luci-app-wifischedule} (ISC) [installed]
-luci-base-26.086.74393~c8e95f1 aarch64_cortex-a53 {feeds/luci/feeds/luci/modules/luci-base} (Apache-2.0) [installed]
-luci-lib-uqr-26.086.74393~c8e95f1 noarch {feeds/luci/feeds/luci/libs/luci-lib-uqr} (MIT) [installed]
-luci-light-26.086.74393~c8e95f1 noarch {feeds/luci/feeds/luci/collections/luci-light} (Apache-2.0) [installed]
-luci-mod-admin-full-26.086.74393~c8e95f1 noarch {feeds/luci/feeds/luci/modules/luci-mod-admin-full} (Apache-2.0) [installed]
-luci-mod-network-26.086.74393~c8e95f1 noarch {feeds/luci/feeds/luci/modules/luci-mod-network} (Apache-2.0) [installed]
-luci-mod-status-26.086.74393~c8e95f1 aarch64_cortex-a53 {feeds/luci/feeds/luci/modules/luci-mod-status} (Apache-2.0) [installed]
-luci-mod-system-26.086.74393~c8e95f1 noarch {feeds/luci/feeds/luci/modules/luci-mod-system} (Apache-2.0) [installed]
-luci-proto-ipv6-26.086.74393~c8e95f1 noarch {feeds/luci/feeds/luci/protocols/luci-proto-ipv6} (Apache-2.0) [installed]
-luci-proto-ppp-26.086.74393~c8e95f1 noarch {feeds/luci/feeds/luci/protocols/luci-proto-ppp} (Apache-2.0) [installed]
-luci-ssl-26.086.74393~c8e95f1 noarch {feeds/luci/feeds/luci/collections/luci-ssl} (Apache-2.0) [installed]
-luci-theme-bootstrap-26.086.74393~c8e95f1 noarch {feeds/luci/feeds/luci/themes/luci-theme-bootstrap} (Apache-2.0) [installed]
+luci-26.051.07599~e08a56d noarch {feeds/luci/feeds/luci/collections/luci} (Apache-2.0) [installed]
+luci-app-attendedsysupgrade-26.082.66454~4edf118 noarch {feeds/luci/feeds/luci/applications/luci-app-attendedsysupgrade} (GPL-2.0) [installed]
+luci-app-firewall-26.052.56300~aea121e noarch {feeds/luci/feeds/luci/applications/luci-app-firewall} (Apache-2.0) [installed]
+luci-app-package-manager-26.051.08413~4f270d1 noarch {feeds/luci/feeds/luci/applications/luci-app-package-manager} (Apache-2.0) [installed]
+luci-app-usteer-26.078.75052~c5deeda noarch {feeds/luci/feeds/luci/applications/luci-app-usteer} (Apache-2.0) [installed]
+luci-app-watchcat-25.343.62322~4c4b5c3 noarch {feeds/luci/feeds/luci/applications/luci-app-watchcat} (Apache-2.0) [installed]
+luci-app-wifischedule-25.057.15074~218dde4 noarch {feeds/luci/feeds/luci/applications/luci-app-wifischedule} (ISC) [installed]
+luci-base-26.075.80566~6efa8ae aarch64_cortex-a53 {feeds/luci/feeds/luci/modules/luci-base} (Apache-2.0) [installed]
+luci-lib-uqr-26.051.08413~1d5c9fa noarch {feeds/luci/feeds/luci/libs/luci-lib-uqr} (MIT) [installed]
+luci-light-23.024.33244~34dee82 noarch {feeds/luci/feeds/luci/collections/luci-light} (Apache-2.0) [installed]
+luci-mod-admin-full-19.253.48496~3f93650 noarch {feeds/luci/feeds/luci/modules/luci-mod-admin-full} (Apache-2.0) [installed]
+luci-mod-network-26.082.65406~a708b89 noarch {feeds/luci/feeds/luci/modules/luci-mod-network} (Apache-2.0) [installed]
+luci-mod-status-26.075.80566~6efa8ae aarch64_cortex-a53 {feeds/luci/feeds/luci/modules/luci-mod-status} (Apache-2.0) [installed]
+luci-mod-system-26.075.78940~13c96bf noarch {feeds/luci/feeds/luci/modules/luci-mod-system} (Apache-2.0) [installed]
+luci-proto-ipv6-25.247.44965~183ab68 noarch {feeds/luci/feeds/luci/protocols/luci-proto-ipv6} (Apache-2.0) [installed]
+luci-proto-ppp-25.315.67830~fb3b96e noarch {feeds/luci/feeds/luci/protocols/luci-proto-ppp} (Apache-2.0) [installed]
+luci-ssl-26.051.07599~e08a56d noarch {feeds/luci/feeds/luci/collections/luci-ssl} (Apache-2.0) [installed]
+luci-theme-bootstrap-26.061.65855~27a9c0c noarch {feeds/luci/feeds/luci/themes/luci-theme-bootstrap} (Apache-2.0) [installed]
 mt7981-wo-firmware-20251125-r1 aarch64_cortex-a53 {feeds/base/firmware/linux-firmware} () [installed]
 mtd-27 aarch64_cortex-a53 {feeds/base/system/mtd} (GPL-2.0+) [installed]
 nano-8.7.1-r2 aarch64_cortex-a53 {feeds/packages/feeds/packages/utils/nano} (GPL-3.0-or-later) [installed]
@@ -176,32 +174,63 @@ wpad-mbedtls-2025.08.26~ca266cc2-r1 aarch64_cortex-a53 {feeds/base/network/servi
 zlib-1.3.1-r1 aarch64_cortex-a53 {feeds/base/libs/zlib} (Zlib) [installed]
 __WORLD__
 apk-mbedtls
-base-files=1699~f505120278
+attendedsysupgrade-common
+base-files
+busybox
 ca-bundle
+cgi-io
 dnsmasq
 dropbear
+eip197-mini-firmware
 firewall4
+fit-check-sign
 fitblk
+fstools
+fwtool
 getrandom
 hostapd-common
 iftop
+iw
 iwinfo
 jansson4
-kernel=6.12.74~60d938adcb727697d3015e4285d4c290-r1
-kmod-crypto-acompress
+jshn
+jsonfilter
+kernel
+kmod-cfg80211
 kmod-crypto-aead
 kmod-crypto-authenc
+kmod-crypto-ccm
+kmod-crypto-cmac
 kmod-crypto-crc32c
+kmod-crypto-ctr
 kmod-crypto-des
+kmod-crypto-gcm
+kmod-crypto-geniv
+kmod-crypto-gf128
+kmod-crypto-ghash
+kmod-crypto-hash
 kmod-crypto-hmac
 kmod-crypto-hw-safexcel
+kmod-crypto-manager
+kmod-crypto-md5
+kmod-crypto-null
+kmod-crypto-rng
+kmod-crypto-seqiv
+kmod-crypto-sha1
+kmod-crypto-sha256
+kmod-crypto-sha3
+kmod-crypto-sha512
 kmod-gpio-button-hotplug
 kmod-hwmon-core
+kmod-i2c-core
 kmod-leds-gpio
 kmod-lib-crc-ccitt
+kmod-lib-crc-itu-t
 kmod-lib-crc32c
-kmod-lib-lzo
 kmod-libphy
+kmod-mac80211
+kmod-mt76-connac
+kmod-mt76-core
 kmod-mt7915e
 kmod-mt7981-firmware
 kmod-nf-conntrack
@@ -222,41 +251,99 @@ kmod-ppp
 kmod-pppoe
 kmod-pppox
 kmod-slhc
-libc=1.2.5-r5
+kmod-thermal
+libblobmsg-json20260213
+libc
+libgcc1
+libiwinfo-data
 libiwinfo20230701
+libjson-c5
+libjson-script20260213
+liblucihttp-ucode
+liblucihttp0
 libmbedtls21
 libmnl0
+libncurses6
 libnftnl11
+libnl-tiny1
+libpcap1
 libpthread
+libubox20260213
+libubus20251202
+libuci20250120
 libuclient20201210
+libucode20230711
+libudebug
 libustream-mbedtls20201210
 logd
 luci
 luci-app-attendedsysupgrade
+luci-app-firewall
+luci-app-package-manager
 luci-app-usteer
 luci-app-watchcat
 luci-app-wifischedule
+luci-base
+luci-lib-uqr
+luci-light
+luci-mod-admin-full
+luci-mod-network
+luci-mod-status
+luci-mod-system
+luci-proto-ipv6
+luci-proto-ppp
 luci-ssl
+luci-theme-bootstrap
 mt7981-wo-firmware
 mtd
 nano
+netifd
+nftables-json
 odhcp6c
 odhcpd-ipv6only
+openwrt-keyring
 ppp
 ppp-mod-pppoe
+procd
+procd-seccomp
 procd-ujail
 px5g-mbedtls
 rpcd
 rpcd-mod-file
 rpcd-mod-iwinfo
+rpcd-mod-luci
+rpcd-mod-rpcsys
+rpcd-mod-rrdns
 rpcd-mod-ucode
 tcpdump
+terminfo
+ubi-utils
 uboot-envtools
+ubox
+ubus
+ubusd
 uci
 uclient-fetch
+ucode
+ucode-mod-digest
+ucode-mod-fs
+ucode-mod-html
+ucode-mod-log
 ucode-mod-math
+ucode-mod-nl80211
+ucode-mod-rtnl
+ucode-mod-ubus
+ucode-mod-uci
+ucode-mod-uloop
 uhttpd
 uhttpd-mod-ubus
 urandom-seed
 urngd
+usign
+usteer
+watchcat
+wifi-scripts
+wifischedule
+wireless-regdb
 wpad-mbedtls
+zlib

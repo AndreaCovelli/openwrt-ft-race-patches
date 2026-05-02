@@ -25,6 +25,8 @@ Options:
   --no-strict-manifest      Report package drift without failing the build.
   --include-untracked       Also upload untracked, non-ignored repo files.
   --fetch-artifacts DIR     Wait for completion and copy output files to DIR.
+                            If the build creates output and then fails, copy
+                            output and reports before returning the failure.
   --install-prereqs         Install tmux and docker.io if missing. Default behavior.
   --no-install-prereqs      Fail instead of installing missing tmux/docker on the EC2 host.
   --help                    Show this message.
@@ -172,6 +174,14 @@ LOCK_FILE="$(abs_repo_path "${POSITIONAL[1]}")"
 
 require_cmd bash date git mkdir mktemp scp sed ssh tar
 
+SSH_CMD=(ssh)
+SCP_CMD=(scp)
+if [[ -n "${SSH_CONFIG_FILE:-}" ]]; then
+  [[ -f "$SSH_CONFIG_FILE" ]] || die "SSH_CONFIG_FILE does not exist: $SSH_CONFIG_FILE"
+  SSH_CMD+=(-F "$SSH_CONFIG_FILE")
+  SCP_CMD+=(-F "$SSH_CONFIG_FILE")
+fi
+
 [[ -f "$LOCK_FILE" ]] || die "lock file not found: $LOCK_FILE"
 case "$LOCK_FILE" in
   "$REPO_ROOT"/*) ;;
@@ -211,21 +221,36 @@ remote_shell_quote() {
 }
 
 remote_tmux_has_session() {
-  ssh "$SSH_TARGET" 'bash -s' -- "$1" <<'REMOTE'
+  "${SSH_CMD[@]}" "$SSH_TARGET" 'bash -s' -- "$1" <<'REMOTE'
 set -euo pipefail
 tmux has-session -t "$1"
 REMOTE
 }
 
 remote_cat_file() {
-  ssh "$SSH_TARGET" 'bash -s' -- "$1" <<'REMOTE'
+  "${SSH_CMD[@]}" "$SSH_TARGET" 'bash -s' -- "$1" <<'REMOTE'
 set -euo pipefail
 cat "$1"
 REMOTE
 }
 
+remote_dir_exists() {
+  "${SSH_CMD[@]}" "$SSH_TARGET" 'bash -s' -- "$1" <<'REMOTE'
+set -euo pipefail
+[[ -d "$1" ]]
+REMOTE
+}
+
+copy_remote_dir_contents() {
+  local remote_dir="$1"
+  local local_dir="$2"
+
+  mkdir -p "$local_dir"
+  "${SCP_CMD[@]}" -r "$SSH_TARGET:$(remote_shell_quote "$remote_dir")/." "$local_dir/"
+}
+
 log "Preparing remote workspace metadata"
-ssh "$SSH_TARGET" 'bash -s' -- "$REMOTE_ROOT" "$SESSION_NAME" "$INSTALL_PREREQS" <<'REMOTE'
+"${SSH_CMD[@]}" "$SSH_TARGET" 'bash -s' -- "$REMOTE_ROOT" "$SESSION_NAME" "$INSTALL_PREREQS" <<'REMOTE'
 set -euo pipefail
 
 remote_root="$1"
@@ -255,14 +280,33 @@ start_docker() {
   fi
 }
 
+install_buildx() {
+  if command -v apt-get >/dev/null 2>&1; then
+    if apt-cache show docker-buildx >/dev/null 2>&1; then
+      sudo apt-get install -y docker-buildx
+    fi
+  elif command -v dnf >/dev/null 2>&1; then
+    sudo dnf install -y docker-buildx-plugin >/dev/null 2>&1 ||
+      sudo dnf install -y docker-buildx >/dev/null 2>&1 ||
+      true
+  elif command -v yum >/dev/null 2>&1; then
+    sudo yum install -y docker-buildx-plugin >/dev/null 2>&1 ||
+      sudo yum install -y docker-buildx >/dev/null 2>&1 ||
+      true
+  fi
+}
+
 install_prereqs() {
   if command -v apt-get >/dev/null 2>&1; then
     sudo apt-get update
     sudo apt-get install -y tmux docker.io
+    install_buildx
   elif command -v dnf >/dev/null 2>&1; then
     sudo dnf install -y tmux docker
+    install_buildx
   elif command -v yum >/dev/null 2>&1; then
     sudo yum install -y tmux docker
+    install_buildx
   else
     printf 'error: no supported package manager found; install tmux and docker manually\n' >&2
     exit 1
@@ -308,6 +352,16 @@ else
   docker_mode='sudo docker'
 fi
 
+if [[ "$install_prereqs" == 'auto' ]]; then
+  case "$docker_mode" in
+    "docker") docker_cmd=(docker) ;;
+    "sudo docker") docker_cmd=(sudo docker) ;;
+  esac
+  if ! "${docker_cmd[@]}" buildx version >/dev/null 2>&1; then
+    command -v sudo >/dev/null 2>&1 && install_buildx
+  fi
+fi
+
 tmux has-session -t "$session_name" 2>/dev/null && {
   printf 'error: tmux session already exists: %s\n' "$session_name" >&2
   exit 1
@@ -340,9 +394,9 @@ fi
   tar --null -czf "$LOCAL_ARCHIVE" --files-from "$SNAPSHOT_FILE_LIST"
 )
 
-scp "$LOCAL_ARCHIVE" "$SSH_TARGET:$REMOTE_ARCHIVE"
+"${SCP_CMD[@]}" "$LOCAL_ARCHIVE" "$SSH_TARGET:$REMOTE_ARCHIVE"
 
-ssh "$SSH_TARGET" 'bash -s' -- "$REMOTE_ROOT" "$SESSION_NAME" "$REMOTE_ARCHIVE" <<'REMOTE'
+"${SSH_CMD[@]}" "$SSH_TARGET" 'bash -s' -- "$REMOTE_ROOT" "$SESSION_NAME" "$REMOTE_ARCHIVE" <<'REMOTE'
 set -euo pipefail
 
 remote_root="$1"
@@ -361,29 +415,47 @@ rm -f "$remote_archive"
 REMOTE
 
 log "Creating remote tmux build launcher"
+REMOTE_EMPTY_ARG='__openwrt_ft_empty_arg__'
+remote_arg() {
+  if [[ -n "$1" ]]; then
+    printf '%s\n' "$1"
+  else
+    printf '%s\n' "$REMOTE_EMPTY_ARG"
+  fi
+}
+
 REMOTE_INFO="$(
-  ssh "$SSH_TARGET" 'bash -s' -- \
+  "${SSH_CMD[@]}" "$SSH_TARGET" 'bash -s' -- \
     "$REMOTE_ROOT" \
     "$SESSION_NAME" \
     "$IMAGE_TAG" \
     "$LOCK_FILE_REL" \
-    "$MAKE_JOBS" \
-    "$DOWNLOAD_JOBS" \
+    "$(remote_arg "$MAKE_JOBS")" \
+    "$(remote_arg "$DOWNLOAD_JOBS")" \
     "$STRICT_MANIFEST" \
-    "$BUILDER_BASE_IMAGE" \
-    "$UBUNTU_SNAPSHOT" \
+    "$(remote_arg "$BUILDER_BASE_IMAGE")" \
+    "$(remote_arg "$UBUNTU_SNAPSHOT")" \
     "$BUILDER_PLATFORM" <<'REMOTE'
 set -euo pipefail
+
+empty_arg='__openwrt_ft_empty_arg__'
+decode_arg() {
+  if [[ "${1-}" == "$empty_arg" ]]; then
+    printf ''
+  else
+    printf '%s' "${1-}"
+  fi
+}
 
 remote_root="$1"
 session_name="$2"
 image_tag="$3"
 lock_file_rel="$4"
-make_jobs="$5"
-download_jobs="$6"
+make_jobs="$(decode_arg "$5")"
+download_jobs="$(decode_arg "$6")"
 strict_manifest="$7"
-builder_base_image="$8"
-ubuntu_snapshot="$9"
+builder_base_image="$(decode_arg "$8")"
+ubuntu_snapshot="$(decode_arg "$9")"
 builder_platform="${10}"
 
 case "$remote_root" in
@@ -447,6 +519,12 @@ case "\$docker_mode" in
     ;;
 esac
 
+if "\${docker_cmd[@]}" buildx version >/dev/null 2>&1; then
+  docker_build_cmd=("\${docker_cmd[@]}" buildx build --load)
+else
+  docker_build_cmd=("\${docker_cmd[@]}" build)
+fi
+
 docker_env=(-e CACHE_ROOT=/cache -e BUILD_ID="\$build_id" -e BUILDER_PLATFORM="\$builder_platform")
 if [[ -n "\$make_jobs" ]]; then
   docker_env+=(-e MAKE_JOBS="\$make_jobs")
@@ -473,7 +551,7 @@ set +e
   set -euo pipefail
   cd "\$repo_dir"
   printf '[%s] building docker image %s\n' "\$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "\$image_tag"
-  "\${docker_cmd[@]}" build "\${docker_platform_args[@]}" "\${docker_build_args[@]}" -f docker/Dockerfile.ec2 -t "\$image_tag" .
+  "\${docker_build_cmd[@]}" "\${docker_platform_args[@]}" "\${docker_build_args[@]}" -f docker/Dockerfile.ec2 -t "\$image_tag" .
   printf '[%s] starting container build for %s\n' "\$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "\$lock_file"
   "\${docker_cmd[@]}" run --rm \\
     "\${docker_platform_args[@]}" \\
@@ -512,6 +590,7 @@ if [[ -n "$FETCH_ARTIFACTS_DIR" ]]; then
   remote_artifact_dir="$(printf '%s\n' "$REMOTE_INFO" | sed -n 's/^artifact_dir=//p')"
   remote_status_file="$(printf '%s\n' "$REMOTE_INFO" | sed -n 's/^status_file=//p')"
   remote_log_file="$(printf '%s\n' "$REMOTE_INFO" | sed -n 's/^log_file=//p')"
+  remote_report_dir="${remote_artifact_dir%/output}/reports"
 
   [[ -n "$remote_artifact_dir" ]] || die "remote artifact directory was not reported"
   [[ -n "$remote_status_file" ]] || die "remote status file was not reported"
@@ -526,18 +605,37 @@ if [[ -n "$FETCH_ARTIFACTS_DIR" ]]; then
     0)
       ;;
     '')
+      if remote_dir_exists "$remote_artifact_dir" >/dev/null 2>&1; then
+        log "Remote build wrote artifacts but no status file was found; copying artifacts before failing"
+        copy_remote_dir_contents "$remote_artifact_dir" "$FETCH_ARTIFACTS_DIR"
+        if remote_dir_exists "$remote_report_dir" >/dev/null 2>&1; then
+          copy_remote_dir_contents "$remote_report_dir" "$FETCH_ARTIFACTS_DIR/reports"
+        fi
+      fi
       die "remote build finished but no status file was found; inspect log: ssh $SSH_TARGET \"tail -f $(remote_shell_quote "$remote_log_file")\""
       ;;
     *[!0-9]*)
       die "remote build wrote an invalid status: $build_status"
       ;;
     *)
-      die "remote build failed with exit status $build_status; inspect log: ssh $SSH_TARGET \"tail -f $(remote_shell_quote "$remote_log_file")\""
+      if remote_dir_exists "$remote_artifact_dir" >/dev/null 2>&1; then
+        log "Remote build failed with exit status $build_status; copying available artifacts to $FETCH_ARTIFACTS_DIR"
+        copy_remote_dir_contents "$remote_artifact_dir" "$FETCH_ARTIFACTS_DIR"
+        if remote_dir_exists "$remote_report_dir" >/dev/null 2>&1; then
+          copy_remote_dir_contents "$remote_report_dir" "$FETCH_ARTIFACTS_DIR/reports"
+        fi
+        log "Artifacts copied to $FETCH_ARTIFACTS_DIR"
+      fi
+      printf 'error: remote build failed with exit status %s; inspect log: ssh %s "tail -f %s"\n' \
+        "$build_status" "$SSH_TARGET" "$(remote_shell_quote "$remote_log_file")" >&2
+      exit "$build_status"
       ;;
   esac
 
-  mkdir -p "$FETCH_ARTIFACTS_DIR"
   log "Copying remote artifacts to $FETCH_ARTIFACTS_DIR"
-  scp -r "$SSH_TARGET:$(remote_shell_quote "$remote_artifact_dir")/." "$FETCH_ARTIFACTS_DIR/"
+  copy_remote_dir_contents "$remote_artifact_dir" "$FETCH_ARTIFACTS_DIR"
+  if remote_dir_exists "$remote_report_dir" >/dev/null 2>&1; then
+    copy_remote_dir_contents "$remote_report_dir" "$FETCH_ARTIFACTS_DIR/reports"
+  fi
   log "Artifacts copied to $FETCH_ARTIFACTS_DIR"
 fi

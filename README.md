@@ -11,14 +11,46 @@ Build entrypoints:
 - example wrapper: `./scripts/build-wr3000e.sh`
 - example wrapper: `./scripts/build-wr3000p.sh`
 - EC2 orchestrator: `./scripts/orchestrate-ec2-build.sh <ssh-target> locks/<device>.lock`
+- full EC2 lifecycle wrapper: `./scripts/run-ec2-build.sh locks/<device>.lock`
 
 Build verification:
 - Builds fail by default if the generated package manifest differs from the
   reference manifest, including missing packages, extra packages, version
   mismatches, or missing `apk world` package names.
+- Lock files can list `MANIFEST_BUILTIN_PACKAGE_NAMES` for packages that are
+  intentionally built into the kernel on a target and therefore do not appear
+  as installed packages in the generated manifest.
 - To allow intentional package drift while still writing drift reports, run with
   `STRICT_MANIFEST=0 ./scripts/build-image.sh locks/<device>.lock` or pass
   `--no-strict-manifest` to the EC2 orchestrator.
+
+Refreshing the mac80211 patch:
+- Run this before orchestration when the patch changes and needs to be
+  normalized for OpenWrt submission. The command must run from a full OpenWrt
+  checkout because it uses OpenWrt's mac80211 package, build rules, and quilt
+  patch stack.
+- Copy the local patch into the OpenWrt checkout, refresh it there, copy the
+  refreshed patch back into this repo, then update the lock-file checksum before
+  building:
+
+```sh
+OPENWRT=/path/to/openwrt
+PATCH=patches/subsys/390-mac80211-defer-ap-side-ft-key-upload.patch
+DEST=package/kernel/mac80211/patches/subsys/390-mac80211-defer-ap-side-ft-key-upload.patch
+
+cp "$PATCH" "$OPENWRT/$DEST"
+
+(
+  cd "$OPENWRT"
+  make package/mac80211/{clean,refresh} V=99
+)
+
+cp "$OPENWRT/$DEST" "$PATCH"
+sha256sum "$PATCH"
+```
+
+- Copy the printed SHA-256 into `PATCH_SHA256` in the relevant `locks/*.lock`,
+  then run `./scripts/orchestrate-ec2-build.sh <ssh-target> locks/<device>.lock`.
 
 What it fixes:
 - `mac80211` no longer rejects the AP-side pairwise key install that happens during the FT pre-`ASSOC` timing window just because `WLAN_STA_ASSOC` is not set yet.
@@ -46,12 +78,19 @@ To add another router:
 
 EC2 orchestration:
 - `scripts/orchestrate-ec2-build.sh` uploads a fresh snapshot of this repo to the EC2 host, prepares a per-run remote workspace, builds `docker/Dockerfile.ec2`, and starts the image build in a detached `tmux` session.
+- `scripts/run-ec2-build.sh` provisions a temporary EC2 builder, creates a
+  temporary SSH-only security group restricted to the current client public IP,
+  runs the orchestrator through a temporary SSH config file, fetches artifacts,
+  and terminates/deletes the temporary EC2 resources on exit. By default it
+  uses a `c8a.xlarge` instance and a 30 GiB gp3 root volume; set `--key-name`
+  and `--key-file` when the defaults do not match your AWS account.
 - The upload snapshot contains tracked repo files by default. Pass
   `--include-untracked` only when intentionally sending untracked, non-ignored
   local files to the EC2 host.
 - By default it auto-installs `tmux` and Docker on the EC2 host if they are
-  missing. It supports hosts with `apt-get`, `dnf`, or `yum`; use
-  `--no-install-prereqs` to disable that.
+  missing, and installs Docker Buildx when the host package manager provides it.
+  It supports hosts with `apt-get`, `dnf`, or `yum`; use `--no-install-prereqs`
+  to disable that.
 - Docker build and run use `--platform linux/amd64` by default so EC2 host
   architecture does not silently change the builder environment. Override with
   `--platform linux/arm64` only when intentionally using an arm64 builder.
@@ -59,24 +98,42 @@ EC2 orchestration:
   `20260410T000000Z` apt snapshot by default. Override with
   `--builder-base-image` or `--ubuntu-snapshot` only when intentionally moving
   the builder environment.
+- The builder disables OpenWrt ccache and keeps only the source download cache.
+  For a disposable single-device EC2 build, a 30 GiB gp3 root volume is usually
+  enough; use 40 GiB for extra margin, or more only if reusing the instance or
+  keeping multiple build runs.
 - To automatically copy the finished images back to the local machine, pass
   `--fetch-artifacts <local-dir>`. This waits for the remote `tmux` build to
   finish, then copies the remote `output/` contents to the local directory.
+  If the image build produced `output/` and then failed during strict manifest
+  verification, artifacts and `reports/` are still copied before the script
+  returns the remote failure status.
 - Example:
   `./scripts/orchestrate-ec2-build.sh my-ec2 locks/build-wr3000p.lock`
 - Example with local artifact fetch:
   `./scripts/orchestrate-ec2-build.sh --fetch-artifacts ./openwrt-artifacts/wr3000p my-ec2 locks/build-wr3000p.lock`
+- Example with one-command EC2 provisioning and cleanup:
+  `./scripts/run-ec2-build.sh --make-jobs 4 --download-jobs 8 locks/build-wr3000e.lock`
 
 Flashing the fetched image:
 - Verify the local artifact checksums before copying anything to the router:
   `cd ./openwrt-artifacts/wr3000p && sha256sum -c sha256sums.txt`
 - Copy the matching `*sysupgrade.bin` image to the router, not the initramfs
-  image:
-  `scp *sysupgrade.bin root@192.168.1.1:/tmp/`
+  image. OpenWrt Dropbear commonly lacks SFTP, so force legacy SCP mode:
+  `scp -O *sysupgrade.bin root@192.168.1.1:/tmp/`
 - On the router, test the image first:
   `sysupgrade -T /tmp/<image-sysupgrade.bin>`
 - If the test passes, run the actual upgrade with verbose output:
   `sysupgrade -v /tmp/<image-sysupgrade.bin>`
+
+Manual EC2 cleanup:
+- `scripts/run-ec2-build.sh` cleans up its temporary instance and security group
+  automatically unless `--keep-instance` is set.
+- If using `scripts/orchestrate-ec2-build.sh` against a manually created EC2
+  host, terminate the disposable build instance after artifacts are fetched.
+- Delete any build-only EBS volumes or snapshots that were not removed with the
+  instance, and release any Elastic IP or other public IPv4 address that is not
+  being reused.
 
 Important config caveat:
 - If your SSIDs use `sae` or `sae-mixed`, do not force `ft_psk_generate_local '1'`. On current OpenWrt this should stay `0`; if `r0kh`/`r1kh` are not set explicitly, OpenWrt will derive them from the shared FT secret material.

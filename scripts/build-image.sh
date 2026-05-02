@@ -99,6 +99,10 @@ append_extra_config() {
   done
 }
 
+disable_ccache_config() {
+  printf '# CONFIG_CCACHE is not set\n' >>"$OPENWRT_DIR/.config"
+}
+
 extract_world() {
   awk 'found { print } /^__WORLD__$/ { found=1 }' "$WORLD_SOURCE_ABS"
 }
@@ -111,6 +115,19 @@ count_lines() {
   local file
   file="$1"
   wc -l <"$file" | tr -d ' '
+}
+
+write_manifest_builtin_package_names() {
+  local package
+
+  if ! declare -p MANIFEST_BUILTIN_PACKAGE_NAMES >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local -n builtin_packages=MANIFEST_BUILTIN_PACKAGE_NAMES
+  for package in "${builtin_packages[@]}"; do
+    [[ -n "$package" ]] && printf '%s\n' "$package"
+  done
 }
 
 strict_manifest_enabled() {
@@ -158,11 +175,10 @@ MAKE_JOBS="${MAKE_JOBS:-$(nproc)}"
 DOWNLOAD_JOBS="${DOWNLOAD_JOBS:-$DEFAULT_DOWNLOAD_JOBS}"
 
 export DL_DIR="${DL_DIR:-$CACHE_ROOT/dl}"
-export CCACHE_DIR="${CCACHE_DIR:-$CACHE_ROOT/ccache}"
 
 [[ ! -e "$BUILD_ROOT" ]] || die "build root already exists: $BUILD_ROOT"
 
-mkdir -p "$WORK_ROOT" "$CACHE_ROOT" "$DL_DIR" "$CCACHE_DIR" "$REPORT_DIR" "$OUTPUT_DIR" "$METADATA_DIR"
+mkdir -p "$WORK_ROOT" "$CACHE_ROOT" "$DL_DIR" "$REPORT_DIR" "$OUTPUT_DIR" "$METADATA_DIR"
 
 log "Build root: $BUILD_ROOT"
 log "Cloning OpenWrt core"
@@ -210,6 +226,7 @@ install -D -m 0644 "$PATCH_SOURCE_ABS" "$OPENWRT_DIR/$PATCH_DEST"
 log "Writing device config"
 cp "$CONFIG_FRAGMENT_ABS" "$OPENWRT_DIR/.config"
 append_extra_config
+disable_ccache_config
 
 (
   cd "$OPENWRT_DIR"
@@ -254,14 +271,18 @@ parse_manifest "$REFERENCE_MANIFEST_ABS" | sort >"$REPORT_DIR/reference.tsv"
 parse_manifest "$BUILT_MANIFEST" | sort >"$REPORT_DIR/built.tsv"
 cut -f1 "$REPORT_DIR/reference.tsv" >"$REPORT_DIR/reference.names"
 cut -f1 "$REPORT_DIR/built.tsv" >"$REPORT_DIR/built.names"
+write_manifest_builtin_package_names | sort -u >"$REPORT_DIR/builtin-package-names.txt"
+sort -u "$REPORT_DIR/reference.names" "$REPORT_DIR/builtin-package-names.txt" >"$REPORT_DIR/reference.effective.names"
+sort -u "$REPORT_DIR/built.names" "$REPORT_DIR/builtin-package-names.txt" >"$REPORT_DIR/built.effective.names"
 
-comm -23 "$REPORT_DIR/reference.names" "$REPORT_DIR/built.names" >"$REPORT_DIR/missing-package-names.txt"
-comm -13 "$REPORT_DIR/reference.names" "$REPORT_DIR/built.names" >"$REPORT_DIR/extra-package-names.txt"
+comm -23 "$REPORT_DIR/reference.names" "$REPORT_DIR/built.effective.names" >"$REPORT_DIR/missing-package-names.txt"
+comm -13 "$REPORT_DIR/reference.effective.names" "$REPORT_DIR/built.names" >"$REPORT_DIR/extra-package-names.txt"
 join -t $'\t' "$REPORT_DIR/reference.tsv" "$REPORT_DIR/built.tsv" | awk -F '\t' '$2 != $3 { print $1 "\t" $2 "\t" $3 }' >"$REPORT_DIR/version-mismatches.tsv"
 
 sed 's/=.*$//' "$REPORT_DIR/reference.world" | sort -u >"$REPORT_DIR/world.names"
-comm -23 "$REPORT_DIR/world.names" "$REPORT_DIR/built.names" >"$REPORT_DIR/world-missing-package-names.txt"
+comm -23 "$REPORT_DIR/world.names" "$REPORT_DIR/built.effective.names" >"$REPORT_DIR/world-missing-package-names.txt"
 
+builtin_package_names_count="$(count_lines "$REPORT_DIR/builtin-package-names.txt")"
 missing_package_names_count="$(count_lines "$REPORT_DIR/missing-package-names.txt")"
 extra_package_names_count="$(count_lines "$REPORT_DIR/extra-package-names.txt")"
 version_mismatches_count="$(count_lines "$REPORT_DIR/version-mismatches.tsv")"
@@ -273,6 +294,7 @@ cp "$PATCH_SOURCE_ABS" "$METADATA_DIR/$(basename "$PATCH_SOURCE_ABS")"
 cp "$REFERENCE_MANIFEST_ABS" "$METADATA_DIR/reference.manifest"
 cp "$REPORT_DIR/reference.world" "$METADATA_DIR/reference.world"
 cp "$REPORT_DIR/final.config" "$METADATA_DIR/final.config"
+cp "$REPORT_DIR/builtin-package-names.txt" "$METADATA_DIR/builtin-package-names.txt"
 
 sysupgrade_sha="$(sha256sum "$SYSUPGRADE_IMAGE" | awk '{print $1}')"
 initramfs_sha="$(sha256sum "$INITRAMFS_IMAGE" | awk '{print $1}')"
@@ -295,6 +317,7 @@ sysupgrade_sha256=${sysupgrade_sha}
 initramfs_image=$(basename "$INITRAMFS_IMAGE")
 initramfs_sha256=${initramfs_sha}
 strict_manifest=${STRICT_MANIFEST_MODE}
+builtin_package_names=${builtin_package_names_count}
 missing_package_names=${missing_package_names_count}
 extra_package_names=${extra_package_names_count}
 version_mismatches=${version_mismatches_count}

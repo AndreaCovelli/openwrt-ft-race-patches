@@ -41,3 +41,11 @@ EXTRA_CONFIG_LINES=(
   'CONFIG_PACKAGE_kmod-crypto-acompress=y'
   'CONFIG_PACKAGE_kmod-lib-lzo=y'
 )
+
+# On mediatek/filogic 6.12 these kmods can be built into the kernel instead
+# of emitted as separate packages, while older router world files may still
+# list them explicitly.
+MANIFEST_BUILTIN_PACKAGE_NAMES=(
+  'kmod-crypto-acompress'
+  'kmod-lib-lzo'
+)
