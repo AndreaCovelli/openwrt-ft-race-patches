@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: AndreaCovelli <andcov23@gmail.com>
 Date: Thu, 30 Apr 2026 03:30:00 +0200
-Subject: [PATCH] wifi: mac80211: defer AP-side FT key upload until station association
+Subject: [PATCH] mac80211: defer AP-side FT key upload until station association
 
 AP-side Fast Transition can derive and hand over the pairwise PTK while the
 peer already has a station entry but before mac80211 marks it associated.

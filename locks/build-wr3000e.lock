@@ -21,7 +21,7 @@ FEED_VIDEO_REF='094bf58da6682f895255a35a84349a79dab4bf95'
 
 PATCH_SOURCE='patches/subsys/390-mac80211-defer-ap-side-ft-key-upload.patch'
 PATCH_DEST='package/kernel/mac80211/patches/subsys/390-mac80211-defer-ap-side-ft-key-upload.patch'
-PATCH_SHA256='fac39e9b85135e830b50b21d51d5d09a5e45a82e43488a1d74cc61e1ce9f4240'
+PATCH_SHA256='7a2504a5050cf787b8cd22aee863ccf5c2107e3d8fc6be055197c2f9a299b3d4'
 
 CONFIG_FRAGMENT='devices/wr3000e/diffconfig'
 WORLD_SOURCE='devices/wr3000e/apk-installed-and-world.txt'
