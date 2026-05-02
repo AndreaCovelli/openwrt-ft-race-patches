@@ -67,6 +67,17 @@ EC2 orchestration:
 - Example with local artifact fetch:
   `./scripts/orchestrate-ec2-build.sh --fetch-artifacts ./openwrt-artifacts/wr3000p my-ec2 locks/build-wr3000p.lock`
 
+Flashing the fetched image:
+- Verify the local artifact checksums before copying anything to the router:
+  `cd ./openwrt-artifacts/wr3000p && sha256sum -c sha256sums.txt`
+- Copy the matching `*sysupgrade.bin` image to the router, not the initramfs
+  image:
+  `scp *sysupgrade.bin root@192.168.1.1:/tmp/`
+- On the router, test the image first:
+  `sysupgrade -T /tmp/<image-sysupgrade.bin>`
+- If the test passes, run the actual upgrade with verbose output:
+  `sysupgrade -v /tmp/<image-sysupgrade.bin>`
+
 Important config caveat:
 - If your SSIDs use `sae` or `sae-mixed`, do not force `ft_psk_generate_local '1'`. On current OpenWrt this should stay `0`; if `r0kh`/`r1kh` are not set explicitly, OpenWrt will derive them from the shared FT secret material.
 - For the current `psk2` setup on these three routers, only flip `ft_psk_generate_local` to `0` if every FT AP will derive the same FT key material or you provide matching `r0kh`/`r1kh` entries explicitly.
