@@ -24,6 +24,7 @@ Options:
   --strict-manifest         Fail if built package manifest drifts. Default behavior.
   --no-strict-manifest      Report package drift without failing the build.
   --include-untracked       Also upload untracked, non-ignored repo files.
+  --fetch-artifacts DIR     Wait for completion and copy output files to DIR.
   --install-prereqs         Install tmux and docker.io if missing. Default behavior.
   --no-install-prereqs      Fail instead of installing missing tmux/docker on the EC2 host.
   --help                    Show this message.
@@ -69,6 +70,7 @@ MAKE_JOBS=''
 DOWNLOAD_JOBS=''
 STRICT_MANIFEST='1'
 INCLUDE_UNTRACKED='0'
+FETCH_ARTIFACTS_DIR=''
 INSTALL_PREREQS='auto'
 
 POSITIONAL=()
@@ -126,6 +128,11 @@ while [[ $# -gt 0 ]]; do
       INCLUDE_UNTRACKED='1'
       shift
       ;;
+    --fetch-artifacts)
+      [[ $# -ge 2 ]] || die "--fetch-artifacts requires a value"
+      FETCH_ARTIFACTS_DIR="$2"
+      shift 2
+      ;;
     --install-prereqs)
       INSTALL_PREREQS='auto'
       shift
@@ -163,7 +170,7 @@ done
 SSH_TARGET="${POSITIONAL[0]}"
 LOCK_FILE="$(abs_repo_path "${POSITIONAL[1]}")"
 
-require_cmd bash date git mktemp scp sed ssh tar
+require_cmd bash date git mkdir mktemp scp sed ssh tar
 
 [[ -f "$LOCK_FILE" ]] || die "lock file not found: $LOCK_FILE"
 case "$LOCK_FILE" in
@@ -197,6 +204,24 @@ esac
 
 log() {
   printf '[%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*"
+}
+
+remote_shell_quote() {
+  printf '%q' "$1"
+}
+
+remote_tmux_has_session() {
+  ssh "$SSH_TARGET" 'bash -s' -- "$1" <<'REMOTE'
+set -euo pipefail
+tmux has-session -t "$1"
+REMOTE
+}
+
+remote_cat_file() {
+  ssh "$SSH_TARGET" 'bash -s' -- "$1" <<'REMOTE'
+set -euo pipefail
+cat "$1"
+REMOTE
 }
 
 log "Preparing remote workspace metadata"
@@ -372,11 +397,13 @@ cache_dir="$remote_root/cache"
 log_dir="$remote_root/logs"
 log_file="$log_dir/$session_name.log"
 launcher="$run_root/run-build.sh"
+status_file="$run_root/build.exit"
 docker_mode="$(sed -n '4p' "$run_root/.orchestrator-state")"
 
 repo_dir_q="$(printf '%q' "$repo_dir")"
 cache_dir_q="$(printf '%q' "$cache_dir")"
 log_file_q="$(printf '%q' "$log_file")"
+status_file_q="$(printf '%q' "$status_file")"
 image_tag_q="$(printf '%q' "$image_tag")"
 lock_file_q="$(printf '%q' "$lock_file_rel")"
 session_q="$(printf '%q' "$session_name")"
@@ -395,6 +422,7 @@ set -euo pipefail
 repo_dir=$repo_dir_q
 cache_dir=$cache_dir_q
 log_file=$log_file_q
+status_file=$status_file_q
 image_tag=$image_tag_q
 lock_file=$lock_file_q
 build_id=$session_q
@@ -440,7 +468,9 @@ if [[ -n "\$ubuntu_snapshot" ]]; then
   docker_build_args+=(--build-arg "UBUNTU_SNAPSHOT=\$ubuntu_snapshot")
 fi
 
-{
+set +e
+(
+  set -euo pipefail
   cd "\$repo_dir"
   printf '[%s] building docker image %s\n' "\$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "\$image_tag"
   "\${docker_cmd[@]}" build "\${docker_platform_args[@]}" "\${docker_build_args[@]}" -f docker/Dockerfile.ec2 -t "\$image_tag" .
@@ -453,7 +483,10 @@ fi
     -w /workspace \\
     "\$image_tag" \\
     ./scripts/build-image.sh "\$lock_file"
-} 2>&1 | tee "\$log_file"
+) 2>&1 | tee "\$log_file"
+status=\${PIPESTATUS[0]}
+printf '%s\n' "\$status" >"\$status_file"
+exit "\$status"
 EOF
 
 chmod +x "$launcher"
@@ -463,6 +496,7 @@ printf 'run_root=%s\n' "$run_root"
 printf 'repo_dir=%s\n' "$repo_dir"
 printf 'log_file=%s\n' "$log_file"
 printf 'artifact_dir=%s\n' "$repo_dir/build/$session_name/output"
+printf 'status_file=%s\n' "$status_file"
 printf 'session=%s\n' "$session_name"
 REMOTE
 )"
@@ -473,3 +507,37 @@ printf 'Attach: ssh %s "tmux attach -t %s"\n' "$SSH_TARGET" "$SESSION_NAME"
 printf 'Tail log: ssh %s "tail -f %s"\n' "$SSH_TARGET" "$(
   printf '%s\n' "$REMOTE_INFO" | sed -n 's/^log_file=//p'
 )"
+
+if [[ -n "$FETCH_ARTIFACTS_DIR" ]]; then
+  remote_artifact_dir="$(printf '%s\n' "$REMOTE_INFO" | sed -n 's/^artifact_dir=//p')"
+  remote_status_file="$(printf '%s\n' "$REMOTE_INFO" | sed -n 's/^status_file=//p')"
+  remote_log_file="$(printf '%s\n' "$REMOTE_INFO" | sed -n 's/^log_file=//p')"
+
+  [[ -n "$remote_artifact_dir" ]] || die "remote artifact directory was not reported"
+  [[ -n "$remote_status_file" ]] || die "remote status file was not reported"
+
+  log "Waiting for remote build session to finish: $SESSION_NAME"
+  while remote_tmux_has_session "$SESSION_NAME" >/dev/null 2>&1; do
+    sleep 30
+  done
+
+  build_status="$(remote_cat_file "$remote_status_file" 2>/dev/null || true)"
+  case "$build_status" in
+    0)
+      ;;
+    '')
+      die "remote build finished but no status file was found; inspect log: ssh $SSH_TARGET \"tail -f $(remote_shell_quote "$remote_log_file")\""
+      ;;
+    *[!0-9]*)
+      die "remote build wrote an invalid status: $build_status"
+      ;;
+    *)
+      die "remote build failed with exit status $build_status; inspect log: ssh $SSH_TARGET \"tail -f $(remote_shell_quote "$remote_log_file")\""
+      ;;
+  esac
+
+  mkdir -p "$FETCH_ARTIFACTS_DIR"
+  log "Copying remote artifacts to $FETCH_ARTIFACTS_DIR"
+  scp -r "$SSH_TARGET:$(remote_shell_quote "$remote_artifact_dir")/." "$FETCH_ARTIFACTS_DIR/"
+  log "Artifacts copied to $FETCH_ARTIFACTS_DIR"
+fi

@@ -59,8 +59,13 @@ EC2 orchestration:
   `20260410T000000Z` apt snapshot by default. Override with
   `--builder-base-image` or `--ubuntu-snapshot` only when intentionally moving
   the builder environment.
+- To automatically copy the finished images back to the local machine, pass
+  `--fetch-artifacts <local-dir>`. This waits for the remote `tmux` build to
+  finish, then copies the remote `output/` contents to the local directory.
 - Example:
   `./scripts/orchestrate-ec2-build.sh my-ec2 locks/build-wr3000p.lock`
+- Example with local artifact fetch:
+  `./scripts/orchestrate-ec2-build.sh --fetch-artifacts ./openwrt-artifacts/wr3000p my-ec2 locks/build-wr3000p.lock`
 
 Important config caveat:
 - If your SSIDs use `sae` or `sae-mixed`, do not force `ft_psk_generate_local '1'`. On current OpenWrt this should stay `0`; if `r0kh`/`r1kh` are not set explicitly, OpenWrt will derive them from the shared FT secret material.
