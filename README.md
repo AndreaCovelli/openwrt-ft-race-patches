@@ -8,6 +8,7 @@ device inputs.
 
 Build entrypoints:
 - generic: `./scripts/build-image.sh locks/<device>.lock`
+- example wrapper: `./scripts/build-wr3000.sh`
 - example wrapper: `./scripts/build-wr3000e.sh`
 - example wrapper: `./scripts/build-wr3000p.sh`
 - EC2 orchestrator: `./scripts/orchestrate-ec2-build.sh <ssh-target> locks/<device>.lock`
@@ -58,10 +59,14 @@ What it fixes:
 - The current patch accepts only AP / AP_VLAN pre-`ASSOC` pairwise keys when a STA object already exists, then relies on the deferred upload path to push them to hardware once the STA transitions into the ready state.
 
 Device lock inputs in this repo:
+- `locks/build-wr3000.lock`
 - `locks/build-wr3000e.lock`
 - `locks/build-wr3000p.lock`
 
 Example device metadata in this repo:
+- `devices/wr3000/diffconfig`
+- `devices/wr3000/installed.manifest`
+- `devices/wr3000/apk-installed-and-world.txt`
 - `devices/wr3000e/diffconfig`
 - `devices/wr3000e/installed.manifest`
 - `devices/wr3000e/apk-installed-and-world.txt`
