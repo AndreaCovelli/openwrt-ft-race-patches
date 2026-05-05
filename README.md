@@ -18,6 +18,8 @@ Build verification:
 - Builds fail by default if the generated package manifest differs from the
   reference manifest, including missing packages, extra packages, version
   mismatches, or missing `apk world` package names.
+- Build artifacts include `logs/build.log` with the builder stdout/stderr.
+  If OpenWrt writes package build logs, those are saved under `logs/openwrt/`.
 - Lock files can list `MANIFEST_BUILTIN_PACKAGE_NAMES` for packages that are
   intentionally built into the kernel on a target and therefore do not appear
   as installed packages in the generated manifest.
@@ -110,10 +112,12 @@ EC2 orchestration:
   keeping multiple build runs.
 - To automatically copy the finished images back to the local machine, pass
   `--fetch-artifacts <local-dir>`. This waits for the remote `tmux` build to
-  finish, then copies the remote `output/` contents to the local directory.
+  finish, then copies the remote `output/` contents and logs to the local
+  directory.
   If the image build produced `output/` and then failed during strict manifest
-  verification, artifacts and `reports/` are still copied before the script
-  returns the remote failure status.
+  verification, artifacts, logs, and `reports/` are still copied before the
+  script returns the remote failure status. The outer EC2 build log is saved as
+  `logs/ec2-build.log`.
 - Example:
   `./scripts/orchestrate-ec2-build.sh my-ec2 locks/build-wr3000p.lock`
 - Example with local artifact fetch:

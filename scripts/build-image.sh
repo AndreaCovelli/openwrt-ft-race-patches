@@ -170,6 +170,9 @@ OPENWRT_DIR="$BUILD_ROOT/openwrt"
 REPORT_DIR="$BUILD_ROOT/reports"
 OUTPUT_DIR="$BUILD_ROOT/output"
 METADATA_DIR="$OUTPUT_DIR/metadata"
+LOG_DIR="$OUTPUT_DIR/logs"
+BUILD_LOG="$LOG_DIR/build.log"
+OPENWRT_LOG_OUTPUT_DIR="$LOG_DIR/openwrt"
 
 MAKE_JOBS="${MAKE_JOBS:-$(nproc)}"
 DOWNLOAD_JOBS="${DOWNLOAD_JOBS:-$DEFAULT_DOWNLOAD_JOBS}"
@@ -178,9 +181,27 @@ export DL_DIR="${DL_DIR:-$CACHE_ROOT/dl}"
 
 [[ ! -e "$BUILD_ROOT" ]] || die "build root already exists: $BUILD_ROOT"
 
-mkdir -p "$WORK_ROOT" "$CACHE_ROOT" "$DL_DIR" "$REPORT_DIR" "$OUTPUT_DIR" "$METADATA_DIR"
+mkdir -p "$WORK_ROOT" "$CACHE_ROOT" "$DL_DIR" "$REPORT_DIR" "$OUTPUT_DIR" "$METADATA_DIR" "$LOG_DIR"
+: >"$BUILD_LOG"
+
+copy_openwrt_logs() {
+  [[ -d "${OPENWRT_DIR:-}/logs" ]] || return 0
+  mkdir -p "$OPENWRT_LOG_OUTPUT_DIR" || return 0
+  cp -a "$OPENWRT_DIR/logs/." "$OPENWRT_LOG_OUTPUT_DIR/" || return 0
+}
+
+finalize_logs() {
+  local status=$?
+  set +e
+  copy_openwrt_logs
+  exit "$status"
+}
+trap finalize_logs EXIT
+
+exec > >(tee -a "$BUILD_LOG") 2>&1
 
 log "Build root: $BUILD_ROOT"
+log "Build log: $BUILD_LOG"
 log "Cloning OpenWrt core"
 git clone "$OPENWRT_REPO_URL" "$OPENWRT_DIR"
 git -C "$OPENWRT_DIR" checkout --detach "$OPENWRT_REF"
@@ -248,6 +269,7 @@ log "Building image"
   cd "$OPENWRT_DIR"
   make -j"$MAKE_JOBS"
 )
+copy_openwrt_logs
 
 ARTIFACT_DIR="$OPENWRT_DIR/bin/targets/$TARGET/$SUBTARGET"
 SYSUPGRADE_IMAGE="$(find "$ARTIFACT_DIR" -maxdepth 1 -type f -name "*${DEVICE_ID}*sysupgrade.bin" | sort | head -n1)"
@@ -298,6 +320,10 @@ cp "$REPORT_DIR/builtin-package-names.txt" "$METADATA_DIR/builtin-package-names.
 
 sysupgrade_sha="$(sha256sum "$SYSUPGRADE_IMAGE" | awk '{print $1}')"
 initramfs_sha="$(sha256sum "$INITRAMFS_IMAGE" | awk '{print $1}')"
+openwrt_logs_rel=''
+if [[ -d "$OPENWRT_LOG_OUTPUT_DIR" ]]; then
+  openwrt_logs_rel='logs/openwrt'
+fi
 
 cat >"$REPORT_DIR/build-summary.txt" <<EOF
 build_id=${BUILD_ID}
@@ -312,6 +338,8 @@ telephony_ref=${FEED_TELEPHONY_REF}
 video_ref=${FEED_VIDEO_REF}
 patch_sha256=${PATCH_SHA256}
 builder_platform=${BUILDER_PLATFORM:-unknown}
+build_log=logs/build.log
+openwrt_logs=${openwrt_logs_rel}
 sysupgrade_image=$(basename "$SYSUPGRADE_IMAGE")
 sysupgrade_sha256=${sysupgrade_sha}
 initramfs_image=$(basename "$INITRAMFS_IMAGE")

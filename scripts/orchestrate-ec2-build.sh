@@ -24,9 +24,10 @@ Options:
   --strict-manifest         Fail if built package manifest drifts. Default behavior.
   --no-strict-manifest      Report package drift without failing the build.
   --include-untracked       Also upload untracked, non-ignored repo files.
-  --fetch-artifacts DIR     Wait for completion and copy output files to DIR.
-                            If the build creates output and then fails, copy
-                            output and reports before returning the failure.
+  --fetch-artifacts DIR     Wait for completion and copy output files and logs
+                            to DIR. If the build creates output and then fails,
+                            copy output, logs, and reports before returning the
+                            failure.
   --install-prereqs         Install tmux and docker.io if missing. Default behavior.
   --no-install-prereqs      Fail instead of installing missing tmux/docker on the EC2 host.
   --help                    Show this message.
@@ -247,6 +248,17 @@ copy_remote_dir_contents() {
 
   mkdir -p "$local_dir"
   "${SCP_CMD[@]}" -r "$SSH_TARGET:$(remote_shell_quote "$remote_dir")/." "$local_dir/"
+}
+
+copy_remote_build_log() {
+  local remote_log_file="$1"
+  local local_dir="$2"
+
+  [[ -n "$remote_log_file" ]] || return 0
+  mkdir -p "$local_dir/logs"
+  if ! "${SCP_CMD[@]}" "$SSH_TARGET:$(remote_shell_quote "$remote_log_file")" "$local_dir/logs/ec2-build.log"; then
+    log "Warning: failed to copy remote build log: $remote_log_file"
+  fi
 }
 
 log "Preparing remote workspace metadata"
@@ -612,9 +624,11 @@ if [[ -n "$FETCH_ARTIFACTS_DIR" ]]; then
           copy_remote_dir_contents "$remote_report_dir" "$FETCH_ARTIFACTS_DIR/reports"
         fi
       fi
+      copy_remote_build_log "$remote_log_file" "$FETCH_ARTIFACTS_DIR"
       die "remote build finished but no status file was found; inspect log: ssh $SSH_TARGET \"tail -f $(remote_shell_quote "$remote_log_file")\""
       ;;
     *[!0-9]*)
+      copy_remote_build_log "$remote_log_file" "$FETCH_ARTIFACTS_DIR"
       die "remote build wrote an invalid status: $build_status"
       ;;
     *)
@@ -624,8 +638,9 @@ if [[ -n "$FETCH_ARTIFACTS_DIR" ]]; then
         if remote_dir_exists "$remote_report_dir" >/dev/null 2>&1; then
           copy_remote_dir_contents "$remote_report_dir" "$FETCH_ARTIFACTS_DIR/reports"
         fi
-        log "Artifacts copied to $FETCH_ARTIFACTS_DIR"
       fi
+      copy_remote_build_log "$remote_log_file" "$FETCH_ARTIFACTS_DIR"
+      log "Artifacts and logs copied to $FETCH_ARTIFACTS_DIR"
       printf 'error: remote build failed with exit status %s; inspect log: ssh %s "tail -f %s"\n' \
         "$build_status" "$SSH_TARGET" "$(remote_shell_quote "$remote_log_file")" >&2
       exit "$build_status"
@@ -637,5 +652,6 @@ if [[ -n "$FETCH_ARTIFACTS_DIR" ]]; then
   if remote_dir_exists "$remote_report_dir" >/dev/null 2>&1; then
     copy_remote_dir_contents "$remote_report_dir" "$FETCH_ARTIFACTS_DIR/reports"
   fi
-  log "Artifacts copied to $FETCH_ARTIFACTS_DIR"
+  copy_remote_build_log "$remote_log_file" "$FETCH_ARTIFACTS_DIR"
+  log "Artifacts and logs copied to $FETCH_ARTIFACTS_DIR"
 fi
