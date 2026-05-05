@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shell:
+    name: Shell syntax and lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6.0.2
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck
+
+      - name: Check Bash syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t files < <(git ls-files 'scripts/*.sh' 'scripts/**/*.sh' 'locks/*.lock' | sort -u)
+          for file in "${files[@]}"; do
+            bash -n "$file"
+          done
+
+      - name: Run shellcheck
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t scripts < <(git ls-files 'scripts/*.sh' 'scripts/**/*.sh' | sort -u)
+          shellcheck --severity=warning -x "${scripts[@]}"
+
+          mapfile -t locks < <(git ls-files 'locks/*.lock' | sort)
+          shellcheck --severity=warning --shell=bash --exclude=SC2034 "${locks[@]}"
+
+  repository-metadata:
+    name: Lock and patch consistency
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6.0.2
+
+      - name: Check lock files
+        shell: bash
+        run: scripts/ci/check-locks.sh
+
+  links:
+    name: Markdown links
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6.0.2
+
+      - name: Check Markdown links
+        uses: lycheeverse/lychee-action@v2.8.0
+        with:
+          fail: true
+          failIfEmpty: true
+          token: ${{ github.token }}
+          args: >-
+            --root-dir .
+            --verbose
+            --no-progress
+            --timeout 20
+            --max-concurrency 4
+            README.md
+            docs/**/*.md
