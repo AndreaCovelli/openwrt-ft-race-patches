@@ -1,0 +1,46 @@
+# Temporary main-branch compile-check input for wr3000e.
+
+OPENWRT_REPO_URL='https://git.openwrt.org/openwrt/openwrt.git'
+OPENWRT_TAG=''
+OPENWRT_REF='8de418547f61d48315d115ed035b61464b3f1140'
+
+FEED_PACKAGES_URL='https://git.openwrt.org/feed/packages.git'
+FEED_PACKAGES_REF='7c83b19c73ef1301d20f3dc62fd9fe145ec7da3f'
+
+FEED_LUCI_URL='https://git.openwrt.org/project/luci.git'
+FEED_LUCI_REF='9e2dfa1b4303adf92d8579dad87c2a62026c7025'
+
+FEED_ROUTING_URL='https://git.openwrt.org/feed/routing.git'
+FEED_ROUTING_REF='776e7160636a7f1add27483ac926dadeb248bb65'
+
+FEED_TELEPHONY_URL='https://git.openwrt.org/feed/telephony.git'
+FEED_TELEPHONY_REF='e2c5adab62e25eddeff3e52d4678163f6c9a6c3a'
+
+FEED_VIDEO_URL='https://github.com/openwrt/video.git'
+FEED_VIDEO_REF='d25cad605d8ce9ff536d85bdda2ad7eb2b83f883'
+
+PATCH_SOURCE='patches/subsys/390-mac80211-defer-ap-side-ft-key-upload.patch'
+PATCH_DEST='package/kernel/mac80211/patches/subsys/390-mac80211-defer-ap-side-ft-key-upload.patch'
+PATCH_SHA256='1e4915f0a9416d6bf5b64d864166c5338b396a74d909a5ceece2da6f7f3e2d5e'
+
+CONFIG_FRAGMENT='devices/wr3000e/diffconfig'
+WORLD_SOURCE='devices/wr3000e/apk-installed-and-world.txt'
+REFERENCE_MANIFEST='devices/wr3000e/installed.manifest'
+
+TARGET='mediatek'
+SUBTARGET='filogic'
+DEVICE_ID='cudy_wr3000e-v1'
+
+DEFAULT_WORK_ROOT='build'
+DEFAULT_CACHE_ROOT='cache'
+DEFAULT_DOWNLOAD_JOBS='8'
+
+EXTRA_CONFIG_LINES=(
+  'CONFIG_PACKAGE_kmod-crypto-acompress=y'
+  'CONFIG_PACKAGE_kmod-lib-lzo=y'
+)
+
+MANIFEST_BUILTIN_PACKAGE_NAMES=(
+  'kmod-crypto-acompress'
+  'kmod-lib-lzo'
+)

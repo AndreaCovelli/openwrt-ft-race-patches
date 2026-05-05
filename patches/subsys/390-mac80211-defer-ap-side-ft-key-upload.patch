@@ -102,7 +102,7 @@ Signed-off-by: AndreaCovelli <andcov23@gmail.com>
  	if (sdata->vif.type == NL80211_IFTYPE_AP_VLAN) {
  		/*
  		 * The driver doesn't know anything about VLAN interfaces.
-@@ -993,6 +1004,54 @@ void ieee80211_reenable_keys(struct ieee
+@@ -994,6 +1005,54 @@ void ieee80211_reenable_keys(struct ieee
  	}
  }
  
