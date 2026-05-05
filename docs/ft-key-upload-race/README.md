@@ -161,7 +161,7 @@ sequenceDiagram
         CFG-->>NL: return success after storing key
         NL-->>H: key request succeeds
         SI->>SI: station moves AUTH to ASSOC
-        SI->>KEY: ieee80211_upload_sta_keys(sta)
+        SI->>KEY: ieee80211_upload_deferred_ap_sta_keys(sta)
         KEY->>KEY: scan AP/VLAN key lists for keys bound to STA
         KEY->>KEY: retry ieee80211_key_enable_hw_accel()
         alt driver-side station is ready
@@ -172,7 +172,7 @@ sequenceDiagram
         end
         KEY-->>SI: ASSOC retry completes
         SI->>SI: station moves ASSOC to AUTHORIZED
-        SI->>KEY: ieee80211_upload_sta_keys(sta)
+        SI->>KEY: ieee80211_upload_deferred_ap_sta_keys(sta)
         KEY->>KEY: scan AP/VLAN key lists for keys bound to STA
         loop each matching key
             alt key is already uploaded
@@ -284,7 +284,7 @@ operation:
 The same file also adds:
 
 - `ieee80211_upload_keys_for_sta()`;
-- `ieee80211_upload_sta_keys()`.
+- `ieee80211_upload_deferred_ap_sta_keys()`.
 
 The helper walks the interface key list and retries hardware upload for keys
 that:
@@ -308,7 +308,7 @@ The final local patch handles that by checking both sides:
   VLAN key list;
 - when called from an AP_VLAN, it walks the VLAN key list and then the master
   AP key list;
-- for other interface types, it only checks the current interface key list.
+- for other interface types, it returns without scanning key lists.
 
 That avoids relying on only `sta->sdata->key_list`, which could miss a deferred
 key object stored on the related AP or VLAN interface.
@@ -318,26 +318,26 @@ key object stored on the related AP or VLAN interface.
 The patch exposes:
 
 ```c
-void ieee80211_upload_sta_keys(struct sta_info *sta);
+void ieee80211_upload_deferred_ap_sta_keys(struct sta_info *sta);
 ```
 
 This lets the station-state code call the retry helper at the right lifecycle
-points.
+points while keeping non-AP station transitions out of the deferred-key scan.
 
 ### `net/mac80211/sta_info.c`
 
 The patch adds two retry calls in `_sta_info_move_state()`:
 
 ```c
-/* Primary retry for key uploads deferred until ASSOC. */
-ieee80211_upload_sta_keys(sta);
+/* Primary retry for AP key uploads deferred until ASSOC. */
+ieee80211_upload_deferred_ap_sta_keys(sta);
 ```
 
 at the AUTH to ASSOC transition, and:
 
 ```c
-/* Extra retry if the ASSOC-time upload was too early. */
-ieee80211_upload_sta_keys(sta);
+/* Extra retry if the ASSOC-time AP key upload was too early. */
+ieee80211_upload_deferred_ap_sta_keys(sta);
 ```
 
 at the ASSOC to AUTHORIZED transition.
@@ -411,6 +411,9 @@ current patch:
   can bitrot against future kernel backports.
 - The hardware-upload skip must be scoped to AP/AP_VLAN pairwise keys, matching
   the relaxation in `cfg.c`.
+- The station-state retry helper is explicitly AP/AP_VLAN-scoped, so the generic
+  `_sta_info_move_state()` transitions do not make non-AP stations scan key
+  lists.
 - Upload retry should not have an outer silent `!sta->uploaded` return. The
   existing `ieee80211_key_enable_hw_accel()` helper already owns that check.
 - AP_VLAN setups need both the VLAN and master AP key lists considered.

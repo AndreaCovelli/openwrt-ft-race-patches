@@ -1,6 +1,6 @@
 Patch bundle for the OpenWrt `hostapd: nl80211: kernel reports: key addition failed` FT race.
 
-Use `patches/subsys/999-mac80211-ft-defer-preassoc-key-upload.patch` in:
+Use `patches/subsys/390-mac80211-defer-ap-side-ft-key-upload.patch` in:
 `package/kernel/mac80211/patches/subsys/`
 
 This repo also contains a generic reproducible OpenWrt builder plus example
@@ -62,6 +62,7 @@ Device lock inputs in this repo:
 - `locks/build-wr3000.lock`
 - `locks/build-wr3000e.lock`
 - `locks/build-wr3000p.lock`
+- `locks/build-wr3000e-main.lock` for a main-branch compile check only
 
 Example device metadata in this repo:
 - `devices/wr3000/diffconfig`
