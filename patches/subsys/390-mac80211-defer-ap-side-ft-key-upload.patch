@@ -27,10 +27,10 @@ roams.
 Signed-off-by: AndreaCovelli <andcov23@gmail.com>
 ---
  net/mac80211/cfg.c      | 24 +++++++++++++--------
- net/mac80211/key.c      | 55 +++++++++++++++++++++++++++++++++++++++++++++++++
+ net/mac80211/key.c      | 59 +++++++++++++++++++++++++++++++++++++++++++++++++
  net/mac80211/key.h      |  1 +
  net/mac80211/sta_info.c |  4 ++++
- 4 files changed, 75 insertions(+), 9 deletions(-)
+ 4 files changed, 79 insertions(+), 9 deletions(-)
 
 --- a/net/mac80211/cfg.c
 +++ b/net/mac80211/cfg.c
@@ -102,7 +102,7 @@ Signed-off-by: AndreaCovelli <andcov23@gmail.com>
  	if (sdata->vif.type == NL80211_IFTYPE_AP_VLAN) {
  		/*
  		 * The driver doesn't know anything about VLAN interfaces.
-@@ -993,6 +1004,50 @@ void ieee80211_reenable_keys(struct ieee
+@@ -993,6 +1004,54 @@ void ieee80211_reenable_keys(struct ieee
  	}
  }
  
@@ -123,13 +123,17 @@ Signed-off-by: AndreaCovelli <andcov23@gmail.com>
 +	}
 +}
 +
-+void ieee80211_upload_sta_keys(struct sta_info *sta)
++void ieee80211_upload_deferred_ap_sta_keys(struct sta_info *sta)
 +{
 +	struct ieee80211_sub_if_data *sdata = sta->sdata;
 +	struct ieee80211_sub_if_data *master;
 +	struct ieee80211_sub_if_data *vlan;
 +
 +	lockdep_assert_wiphy(sdata->local->hw.wiphy);
++
++	if (sdata->vif.type != NL80211_IFTYPE_AP &&
++	    sdata->vif.type != NL80211_IFTYPE_AP_VLAN)
++		return;
 +
 +	ieee80211_upload_keys_for_sta(sdata, sta);
 +
@@ -159,7 +163,7 @@ Signed-off-by: AndreaCovelli <andcov23@gmail.com>
  			 bool force_synchronize);
  void ieee80211_free_sta_keys(struct ieee80211_local *local,
  			     struct sta_info *sta);
-+void ieee80211_upload_sta_keys(struct sta_info *sta);
++void ieee80211_upload_deferred_ap_sta_keys(struct sta_info *sta);
  void ieee80211_reenable_keys(struct ieee80211_sub_if_data *sdata);
  int ieee80211_key_switch_links(struct ieee80211_sub_if_data *sdata,
  			       unsigned long del_links_mask,
@@ -169,8 +173,8 @@ Signed-off-by: AndreaCovelli <andcov23@gmail.com>
  				if (!sta->sta.support_p2p_ps)
  					ieee80211_recalc_p2p_go_ps_allowed(sta->sdata);
  			}
-+			/* Primary retry for key uploads deferred until ASSOC. */
-+			ieee80211_upload_sta_keys(sta);
++			/* Primary retry for AP key uploads deferred until ASSOC. */
++			ieee80211_upload_deferred_ap_sta_keys(sta);
  		} else if (sta->sta_state == IEEE80211_STA_AUTHORIZED) {
  			ieee80211_vif_dec_num_mcast(sta->sdata);
  			clear_bit(WLAN_STA_AUTHORIZED, &sta->_flags);
@@ -178,8 +182,8 @@ Signed-off-by: AndreaCovelli <andcov23@gmail.com>
  			set_bit(WLAN_STA_AUTHORIZED, &sta->_flags);
  			ieee80211_check_fast_xmit(sta);
  			ieee80211_check_fast_rx(sta);
-+			/* Extra retry if the ASSOC-time upload was too early. */
-+			ieee80211_upload_sta_keys(sta);
++			/* Extra retry if the ASSOC-time AP key upload was too early. */
++			ieee80211_upload_deferred_ap_sta_keys(sta);
  		}
  		if (sta->sdata->vif.type == NL80211_IFTYPE_AP_VLAN ||
  		    sta->sdata->vif.type == NL80211_IFTYPE_AP)
