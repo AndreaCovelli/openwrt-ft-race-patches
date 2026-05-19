@@ -359,11 +359,14 @@ EOF
 
 cp "$REPORT_DIR/build-summary.txt" "$OUTPUT_DIR/"
 
+if (("${world_missing_package_names_count}" > 0)); then
+  die "built manifest is missing apk world packages; see $REPORT_DIR and $REPORT_DIR/build-summary.txt"
+fi
+
 if ((STRICT_MANIFEST_MODE)) && (
   (("${missing_package_names_count}" > 0)) ||
   (("${extra_package_names_count}" > 0)) ||
-  (("${version_mismatches_count}" > 0)) ||
-  (("${world_missing_package_names_count}" > 0))
+  (("${version_mismatches_count}" > 0))
 ); then
   die "built manifest differs from reference; see $REPORT_DIR and $REPORT_DIR/build-summary.txt"
 fi

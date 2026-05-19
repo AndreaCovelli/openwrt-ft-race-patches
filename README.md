@@ -11,6 +11,8 @@ Build entrypoints:
 - example wrapper: `./scripts/build-wr3000.sh`
 - example wrapper: `./scripts/build-wr3000e.sh`
 - example wrapper: `./scripts/build-wr3000p.sh`
+- ASU-like latest release preparation:
+  `./scripts/prepare-openwrt-upgrade.sh wr3000e locks/build-wr3000e.lock -- --make-jobs 4 --download-jobs 8`
 - EC2 orchestrator: `./scripts/orchestrate-ec2-build.sh <ssh-target> locks/<device>.lock`
 - full EC2 lifecycle wrapper: `./scripts/run-ec2-build.sh locks/<device>.lock`
 
@@ -28,7 +30,31 @@ Build verification:
   as installed packages in the generated manifest.
 - To allow intentional package drift while still writing drift reports, run with
   `STRICT_MANIFEST=0 ./scripts/build-image.sh locks/<device>.lock` or pass
-  `--no-strict-manifest` to the EC2 orchestrator.
+  `--no-strict-manifest` to the EC2 orchestrator. Missing `apk world` package
+  names are always fatal, even when strict manifest checking is disabled.
+
+ASU-like latest release preparation:
+- `scripts/prepare-openwrt-upgrade.sh` follows the attended-sysupgrade style of
+  selecting the latest available release for the router's current stable branch
+  and preserving the router's live `apk world`, but it still builds with this
+  repo's patched OpenWrt builder instead of the public ASU image builder.
+- The command reads `/etc/openwrt_release`, `attendedsysupgrade.server.url`,
+  `/etc/apk/world`, and the installed apk database from the router over SSH.
+  It validates target/profile availability against the ASU server, verifies the
+  router board is supported by that profile, updates only the selected stable
+  lock file to exact OpenWrt and release feed commits, refreshes that device's
+  package baseline, then starts `scripts/run-ec2-build.sh` with
+  `--no-strict-manifest` for the transition build. The build still fails if any
+  package from the router's captured `apk world` is missing from the image.
+- Use `--dry-run` to print the selected release, lock changes, package baseline
+  paths, and EC2 build command without writing files or starting a build. Use
+  `--version 25.12.4` to prepare a specific release instead of the latest
+  same-branch ASU release.
+- If the router already runs the selected latest release, the command refreshes
+  the package baseline and exits without starting a build.
+- The command does not copy or flash firmware. After the artifact is fetched,
+  verify checksums, copy the `*sysupgrade.bin` image to the router, run
+  `sysupgrade -T`, then flash manually as described below.
 
 Refreshing the mac80211 patch:
 - Run this before orchestration when the patch changes and needs to be

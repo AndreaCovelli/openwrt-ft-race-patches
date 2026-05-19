@@ -51,6 +51,10 @@ jobs:
           mapfile -t locks < <(git ls-files 'locks/*.lock' | sort)
           shellcheck --severity=warning --shell=bash --exclude=SC2034 "${locks[@]}"
 
+      - name: Check ASU-like upgrade preparation workflow
+        shell: bash
+        run: scripts/ci/check-prepare-openwrt-upgrade.sh
+
   repository-metadata:
     name: Lock and patch consistency
     runs-on: ubuntu-latest
