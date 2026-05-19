@@ -115,37 +115,6 @@ lock_value() {
   awk -F"'" -v name="$name" '$0 ~ "^" name "='\''" { print $2; exit }' "$file"
 }
 
-replace_lock_assignment() {
-  local file="$1"
-  local name="$2"
-  local value="$3"
-  local tmp
-
-  tmp="$(mktemp "${TMPDIR:-/tmp}/openwrt-lock.XXXXXXXX")"
-  awk -v name="$name" -v value="$value" '
-    $0 ~ "^" name "='\''" {
-      print name "='\''" value "'\''"
-      found = 1
-      next
-    }
-    { print }
-    END {
-      if (!found) {
-        exit 2
-      }
-    }
-  ' "$file" >"$tmp" || {
-    rm -f "$tmp"
-    die "$file: missing lock assignment $name"
-  }
-
-  if ! cmp -s "$file" "$tmp"; then
-    mv "$tmp" "$file"
-  else
-    rm -f "$tmp"
-  fi
-}
-
 rewrite_upgrade_lock() {
   local file="$1"
   local tmp
@@ -207,6 +176,7 @@ rewrite_upgrade_lock() {
     rm -f "$tmp"
     die "$file: failed to rewrite lock assignments"
   }
+  chmod --reference="$file" "$tmp"
 
   if ! cmp -s "$file" "$tmp"; then
     mv "$tmp" "$file"
@@ -225,6 +195,7 @@ install_file_atomic() {
     rm -f "$tmp"
     die "failed to stage $destination"
   }
+  chmod --reference="$destination" "$tmp"
   mv "$tmp" "$destination"
 }
 
