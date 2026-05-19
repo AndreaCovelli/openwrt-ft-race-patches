@@ -15,6 +15,9 @@ require_nonempty() {
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
+# shellcheck source=scripts/lib/build-name.sh
+source "$repo_root/scripts/lib/build-name.sh"
+
 mapfile -t locks < <(git ls-files 'locks/*.lock' | sort)
 ((${#locks[@]} > 0)) || die 'no lock files found'
 
@@ -40,11 +43,16 @@ required_vars=(
   TARGET
   SUBTARGET
   DEVICE_ID
+  ARTIFACT_VARIANT
 )
 
 for lock in "${locks[@]}"; do
   (
+    sourced_build_name=''
+    parsed_build_name=''
+
     unset "${required_vars[@]}"
+    unset OPENWRT_TAG
 
     # shellcheck source=/dev/null
     source "$lock"
@@ -67,6 +75,13 @@ for lock in "${locks[@]}"; do
       die "$lock: FEED_VIDEO_REF must be a full 40-character hex commit"
     [[ "$PATCH_SHA256" =~ ^[0-9a-f]{64}$ ]] ||
       die "$lock: PATCH_SHA256 must be a 64-character lowercase hex checksum"
+
+    sourced_build_name="$(openwrt_default_build_name '20260519T143000Z')" ||
+      die "$lock: cannot generate convention-compliant build artifact name"
+    parsed_build_name="$(openwrt_default_build_name_from_lock "$lock" '20260519T143000Z')" ||
+      die "$lock: cannot generate convention-compliant build artifact name from literal lock fields"
+    [[ "$parsed_build_name" == "$sourced_build_name" ]] ||
+      die "$lock: sourced and parsed build artifact names differ"
 
     [[ -f "$PATCH_SOURCE" ]] ||
       die "$lock: PATCH_SOURCE does not exist: $PATCH_SOURCE"

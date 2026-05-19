@@ -18,6 +18,9 @@ Build verification:
 - Builds fail by default if the generated package manifest differs from the
   reference manifest, including missing packages, extra packages, version
   mismatches, or missing `apk world` package names.
+- Default build/session artifact bundle names follow:
+  `openwrt-ft-<device-id>-<openwrt-version>-<variant>-<utc-build-id>`.
+  The actual OpenWrt firmware image filenames are left unchanged.
 - Build artifacts include `logs/build.log` with the builder stdout/stderr.
   If OpenWrt writes package build logs, those are saved under `logs/openwrt/`.
 - Lock files can list `MANIFEST_BUILTIN_PACKAGE_NAMES` for packages that are
@@ -82,7 +85,8 @@ To add another router:
 2. Save the router's installed manifest and `apk world`.
 3. Create a `devices/<name>/` directory for those files.
 4. Copy one of the files in `locks/` and update `CONFIG_FRAGMENT`, `WORLD_SOURCE`, `REFERENCE_MANIFEST`, and `DEVICE_ID`.
-5. Run `./scripts/build-image.sh locks/your-device.lock`.
+5. Set `ARTIFACT_VARIANT` to a short intent label such as `patched`.
+6. Run `./scripts/build-image.sh locks/your-device.lock`.
 
 EC2 orchestration:
 - `scripts/orchestrate-ec2-build.sh` uploads a fresh snapshot of this repo to the EC2 host, prepares a per-run remote workspace, builds `docker/Dockerfile.ec2`, and starts the image build in a detached `tmux` session.
@@ -121,13 +125,13 @@ EC2 orchestration:
 - Example:
   `./scripts/orchestrate-ec2-build.sh my-ec2 locks/build-wr3000p.lock`
 - Example with local artifact fetch:
-  `./scripts/orchestrate-ec2-build.sh --fetch-artifacts ./openwrt-artifacts/wr3000p my-ec2 locks/build-wr3000p.lock`
+  `./scripts/orchestrate-ec2-build.sh --session openwrt-ft-cudy_wr3000p-v1-25.12.2-patched-20260519T143000Z --fetch-artifacts ./openwrt-artifacts/openwrt-ft-cudy_wr3000p-v1-25.12.2-patched-20260519T143000Z my-ec2 locks/build-wr3000p.lock`
 - Example with one-command EC2 provisioning and cleanup:
   `./scripts/run-ec2-build.sh --make-jobs 4 --download-jobs 8 locks/build-wr3000e.lock`
 
 Flashing the fetched image:
 - Verify the local artifact checksums before copying anything to the router:
-  `cd ./openwrt-artifacts/wr3000p && sha256sum -c sha256sums.txt`
+  `cd ./openwrt-artifacts/openwrt-ft-cudy_wr3000p-v1-25.12.2-patched-20260519T143000Z && sha256sum -c sha256sums.txt`
 - Copy the matching `*sysupgrade.bin` image to the router, not the initramfs
   image. OpenWrt Dropbear commonly lacks SFTP, so force legacy SCP mode:
   `scp -O *sysupgrade.bin root@192.168.1.1:/tmp/`
