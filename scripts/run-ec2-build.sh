@@ -346,7 +346,7 @@ if [[ -z "$SUBNET_ID" ]]; then
   [[ -n "$SUBNET_ID" ]] || die "no public subnet in $VPC_ID offers $INSTANCE_TYPE; pass --subnet-id"
 fi
 
-CLIENT_IP="$(curl -fsS https://checkip.amazonaws.com | tr -d '[:space:]')"
+CLIENT_IP="$(curl --connect-timeout 10 --max-time 30 -fsS https://checkip.amazonaws.com | tr -d '[:space:]')"
 [[ "$CLIENT_IP" == *.* ]] || die "failed to determine client public IPv4 address"
 
 RUN_NAME="openwrt-ft-build-$SESSION_NAME"
