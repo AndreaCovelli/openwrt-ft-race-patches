@@ -29,6 +29,9 @@ Options:
                             openwrt-ft-<device-id>-<openwrt-version>-<variant>-<utc>.
   --artifact-dir DIR        Local artifact output. Default:
                             ./openwrt-artifacts/<session>.
+  --builder-image REF       Prebuilt Docker builder image passed through.
+  --rebuild-builder-image   Build docker/Dockerfile.ec2 on the remote host
+                            instead of pulling the prebuilt builder image.
   --make-jobs N             Pass through to orchestrate-ec2-build.sh.
   --download-jobs N         Pass through to orchestrate-ec2-build.sh.
   --strict-manifest         Pass through. Default behavior.
@@ -87,6 +90,8 @@ SUBNET_ID=''
 AWS_REGION="${AWS_REGION:-}"
 SESSION_NAME=''
 ARTIFACT_DIR=''
+BUILDER_IMAGE=''
+REBUILD_BUILDER_IMAGE='0'
 MAKE_JOBS=''
 DOWNLOAD_JOBS=''
 STRICT_ARG=()
@@ -149,6 +154,15 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || die "--artifact-dir requires a value"
       ARTIFACT_DIR="$2"
       shift 2
+      ;;
+    --builder-image)
+      [[ $# -ge 2 ]] || die "--builder-image requires a value"
+      BUILDER_IMAGE="$2"
+      shift 2
+      ;;
+    --rebuild-builder-image)
+      REBUILD_BUILDER_IMAGE='1'
+      shift
       ;;
     --make-jobs)
       [[ $# -ge 2 ]] || die "--make-jobs requires a value"
@@ -417,6 +431,12 @@ orchestrator_args=(
 )
 if [[ -n "$REMOTE_ROOT" ]]; then
   orchestrator_args+=(--remote-root "$REMOTE_ROOT")
+fi
+if [[ -n "$BUILDER_IMAGE" ]]; then
+  orchestrator_args+=(--builder-image "$BUILDER_IMAGE")
+fi
+if [[ "$REBUILD_BUILDER_IMAGE" == '1' ]]; then
+  orchestrator_args+=(--rebuild-builder-image)
 fi
 if [[ -n "$MAKE_JOBS" ]]; then
   orchestrator_args+=(--make-jobs "$MAKE_JOBS")
