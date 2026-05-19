@@ -7,6 +7,9 @@ export PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)"
 
+# shellcheck source=scripts/lib/build-name.sh
+source "$SCRIPT_DIR/lib/build-name.sh"
+
 if [[ $# -gt 1 ]]; then
   printf 'usage: %s [lock-file]\n' "${BASH_SOURCE[0]}" >&2
   exit 1
@@ -31,6 +34,8 @@ if [[ ! -f "$LOCK_FILE" ]]; then
   printf 'error: lock file not found: %s\n' "$LOCK_FILE" >&2
   exit 1
 fi
+
+unset OPENWRT_TAG OPENWRT_REF DEVICE_ID ARTIFACT_VARIANT
 
 # shellcheck source=/dev/null
 source "$LOCK_FILE"
@@ -164,7 +169,7 @@ REFERENCE_MANIFEST_ABS="$(abs_path "$REFERENCE_MANIFEST")"
 
 WORK_ROOT="${WORK_ROOT:-$REPO_ROOT/$DEFAULT_WORK_ROOT}"
 CACHE_ROOT="${CACHE_ROOT:-$REPO_ROOT/$DEFAULT_CACHE_ROOT}"
-BUILD_ID="${BUILD_ID:-$(date -u '+%Y%m%dT%H%M%SZ')}"
+BUILD_ID="${BUILD_ID:-$(openwrt_default_build_name)}"
 BUILD_ROOT="$WORK_ROOT/$BUILD_ID"
 OPENWRT_DIR="$BUILD_ROOT/openwrt"
 REPORT_DIR="$BUILD_ROOT/reports"

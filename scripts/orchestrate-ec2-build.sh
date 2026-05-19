@@ -7,6 +7,9 @@ export PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)"
 
+# shellcheck source=scripts/lib/build-name.sh
+source "$SCRIPT_DIR/lib/build-name.sh"
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -14,7 +17,8 @@ Usage:
 
 Options:
   --remote-root PATH        Remote workspace root. Default: ~/openwrt-ft-builds
-  --session NAME            tmux session and build id. Default: <lock-stem>-<utc-timestamp>
+  --session NAME            tmux session and build id. Default:
+                            openwrt-ft-<device-id>-<openwrt-version>-<variant>-<utc>
   --image-tag TAG           Remote Docker image tag. Default: patch-fix-openwrt-builder
   --platform PLATFORM       Docker build/run platform. Default: linux/amd64
   --builder-base-image REF  Docker base image override for Dockerfile.ec2.
@@ -192,10 +196,9 @@ case "$LOCK_FILE" in
 esac
 
 LOCK_FILE_REL="${LOCK_FILE#"$REPO_ROOT"/}"
-LOCK_STEM="$(basename "$LOCK_FILE_REL" .lock)"
 
 if [[ -z "$SESSION_NAME" ]]; then
-  SESSION_NAME="${LOCK_STEM}-$(date -u '+%Y%m%dT%H%M%SZ')"
+  SESSION_NAME="$(openwrt_default_build_name_from_lock "$LOCK_FILE")"
 fi
 
 case "$SESSION_NAME" in
