@@ -4,7 +4,7 @@ This note explains the problem addressed by
 `patches/subsys/390-mac80211-defer-ap-side-ft-key-upload.patch` and the
 OpenWrt PR at <https://github.com/openwrt/openwrt/pull/23181>.
 
-As checked on 2026-05-05, the PR is open and carries one patch file:
+As checked on 2026-05-19, the PR is open and carries one patch file:
 `package/kernel/mac80211/patches/subsys/390-mac80211-defer-ap-side-ft-key-upload.patch`.
 The patch is currently proposed as an OpenWrt-local mac80211 fix, not as a
 backport of an already accepted linux-wireless commit.
@@ -258,12 +258,22 @@ pairwise_ap = sta && (key->conf.flags & IEEE80211_KEY_FLAG_PAIRWISE) &&
 	      (sdata->vif.type == NL80211_IFTYPE_AP ||
 	       sdata->vif.type == NL80211_IFTYPE_AP_VLAN);
 
-if (pairwise_ap && !test_sta_flag(sta, WLAN_STA_ASSOC))
+if (pairwise_ap && !test_sta_flag(sta, WLAN_STA_ASSOC)) {
+	ret = 1;
 	goto out_unsupported;
+}
 ```
 
 This matters because accepting the key into mac80211 is not the same as sending
 it to hardware immediately.
+
+The `ret = 1` assignment is intentional. Some drivers, including ath10k, set
+`IEEE80211_HW_SW_CRYPTO_CONTROL`, which means mac80211 must not automatically
+fall back to software crypto after hardware upload is skipped. In mac80211's
+`set_key()` contract, a return value of `1` means this specific key can stay in
+software. Setting `ret = 1` for the pre-ASSOC deferral therefore lets the key be
+accepted and validated while still avoiding premature driver upload. Without
+that value, the deferred path can still fail for `SW_CRYPTO_CONTROL` drivers.
 
 The `pairwise_ap` filter intentionally mirrors the narrower exception in
 `cfg.c`. The add-key path accepts a pre-ASSOC key only for AP/AP_VLAN pairwise
@@ -411,6 +421,9 @@ current patch:
   can bitrot against future kernel backports.
 - The hardware-upload skip must be scoped to AP/AP_VLAN pairwise keys, matching
   the relaxation in `cfg.c`.
+- The pre-ASSOC skip must happen before the generic `sta && !sta->uploaded`
+  path and set `ret = 1`, so drivers with `SW_CRYPTO_CONTROL` can keep the key
+  in software until the later ASSOC retry.
 - The station-state retry helper is explicitly AP/AP_VLAN-scoped, so the generic
   `_sta_info_move_state()` transitions do not make non-AP stations scan key
   lists.
@@ -438,6 +451,14 @@ The reported validation was:
 The PR discussion also notes one remaining caveat: a dedicated AP_VLAN plus FT
 roam test had not yet been run when the AP_VLAN review concern was addressed.
 
+Additional forum testing reported that an earlier revision cleared the log on
+mt76 but still produced `nl80211: kernel reports: key addition failed` on
+ath10k. The current revision was updated after that report by moving the
+pre-ASSOC AP/AP_VLAN pairwise deferral before the generic `sta && !sta->uploaded`
+check and by setting `ret = 1` for the deferred path. That change is intended to
+cover ath10k's `SW_CRYPTO_CONTROL` behavior, but a successful ath10k retest of
+the latest revision has not yet been reported.
+
 ## Practical result
 
 After the patch, AP-side FT key installation no longer depends on userspace
@@ -459,3 +480,5 @@ The intended result is:
 - OpenWrt PR: <https://github.com/openwrt/openwrt/pull/23181>
 - Historical mac80211 FT behavior discussion: <https://www.spinics.net/lists/kernel/msg1478599.html>
 - OpenWrt forum report of the same hostapd log: <https://forum.openwrt.org/t/daemon-err-hostapd-nl80211-kernel-reports-key-addition-failed-is-this-a-problem/100370?page=2>
+- OpenWrt forum ath10k report: <https://forum.openwrt.org/t/daemon-err-hostapd-nl80211-kernel-reports-key-addition-failed-is-this-a-problem/100370/93>
+- OpenWrt forum follow-up on the ath10k-targeted revision: <https://forum.openwrt.org/t/daemon-err-hostapd-nl80211-kernel-reports-key-addition-failed-is-this-a-problem/100370/94>
