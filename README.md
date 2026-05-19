@@ -135,8 +135,14 @@ EC2 orchestration:
 - Docker build and run use `--platform linux/amd64` by default so EC2 host
   architecture does not silently change the builder environment. Override with
   `--platform linux/arm64` only when intentionally using an arm64 builder.
-- The EC2 Docker builder uses `ubuntu:noble-20260410` and the Ubuntu
-  `20260410T000000Z` apt snapshot by default. Override with
+- The EC2 Docker builder pulls the private prebuilt image
+  `ghcr.io/andreacovelli/patch-fix-repo/openwrt-builder:ubuntu-noble-20260410-snapshot-20260410t000000z@sha256:dd52704e37949d9e815ddc762c422258e13d6783371b7eabcde759b02e85650f`
+  by default. Because the image is private, set `GHCR_USERNAME` plus
+  `GHCR_TOKEN`, `GITHUB_TOKEN`, or `GITHUB_PAT_TOKEN` locally with package read
+  access so the remote host can authenticate to GHCR before pulling. Use
+  `--rebuild-builder-image` to rebuild `docker/Dockerfile.ec2` on the remote
+  host. When rebuilding, the Dockerfile uses `ubuntu:noble-20260410` and the
+  Ubuntu `20260410T000000Z` apt snapshot by default. Override with
   `--builder-base-image` or `--ubuntu-snapshot` only when intentionally moving
   the builder environment.
 - The builder disables OpenWrt ccache and keeps only the source download cache.

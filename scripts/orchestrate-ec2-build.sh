@@ -19,7 +19,17 @@ Options:
   --remote-root PATH        Remote workspace root. Default: ~/openwrt-ft-builds
   --session NAME            tmux session and build id. Default:
                             openwrt-ft-<device-id>-<openwrt-version>-<variant>-<utc>
-  --image-tag TAG           Remote Docker image tag. Default: patch-fix-openwrt-builder
+  --builder-image REF       Prebuilt Docker builder image. Default:
+                            ghcr.io/andreacovelli/patch-fix-repo/openwrt-builder:ubuntu-noble-20260410-snapshot-20260410t000000z@sha256:dd52704e37949d9e815ddc762c422258e13d6783371b7eabcde759b02e85650f
+                            Private GHCR images need GHCR_USERNAME and
+                            GHCR_TOKEN, GITHUB_TOKEN, or GITHUB_PAT_TOKEN set
+                            locally so the remote host can authenticate before
+                            pulling.
+  --rebuild-builder-image   Build docker/Dockerfile.ec2 on the remote host
+                            instead of pulling the prebuilt builder image.
+  --image-tag TAG           Remote Docker image tag used with
+                            --rebuild-builder-image. Default:
+                            patch-fix-openwrt-builder
   --platform PLATFORM       Docker build/run platform. Default: linux/amd64
   --builder-base-image REF  Docker base image override for Dockerfile.ec2.
   --ubuntu-snapshot TS      Ubuntu apt snapshot timestamp. Default comes from Dockerfile.ec2.
@@ -69,6 +79,8 @@ abs_repo_path() {
 # shellcheck disable=SC2088
 REMOTE_ROOT='~/openwrt-ft-builds'
 SESSION_NAME=''
+BUILDER_IMAGE='ghcr.io/andreacovelli/patch-fix-repo/openwrt-builder:ubuntu-noble-20260410-snapshot-20260410t000000z@sha256:dd52704e37949d9e815ddc762c422258e13d6783371b7eabcde759b02e85650f'
+REBUILD_BUILDER_IMAGE='0'
 IMAGE_TAG='patch-fix-openwrt-builder'
 BUILDER_PLATFORM='linux/amd64'
 BUILDER_BASE_IMAGE=''
@@ -92,6 +104,15 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || die "--session requires a value"
       SESSION_NAME="$2"
       shift 2
+      ;;
+    --builder-image)
+      [[ $# -ge 2 ]] || die "--builder-image requires a value"
+      BUILDER_IMAGE="$2"
+      shift 2
+      ;;
+    --rebuild-builder-image)
+      REBUILD_BUILDER_IMAGE='1'
+      shift
       ;;
     --image-tag)
       [[ $# -ge 2 ]] || die "--image-tag requires a value"
@@ -200,6 +221,7 @@ LOCK_FILE_REL="${LOCK_FILE#"$REPO_ROOT"/}"
 if [[ -z "$SESSION_NAME" ]]; then
   SESSION_NAME="$(openwrt_default_build_name_from_lock "$LOCK_FILE")"
 fi
+TMUX_SESSION_NAME="${SESSION_NAME//./_}"
 
 case "$SESSION_NAME" in
   *[!A-Za-z0-9._-]*)
@@ -215,6 +237,11 @@ case "$STRICT_MANIFEST" in
 esac
 
 [[ -n "$BUILDER_PLATFORM" ]] || die "--platform must not be empty"
+[[ -n "$BUILDER_IMAGE" ]] || die "--builder-image must not be empty"
+case "$REBUILD_BUILDER_IMAGE" in
+  0|1) ;;
+  *) die "rebuild builder image value must be 0 or 1" ;;
+esac
 
 log() {
   printf '[%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*"
@@ -225,21 +252,21 @@ remote_shell_quote() {
 }
 
 remote_tmux_has_session() {
-  "${SSH_CMD[@]}" "$SSH_TARGET" 'bash -s' -- "$1" <<'REMOTE'
+  "${SSH_CMD[@]}" "$SSH_TARGET" 'bash -s' -- "$(remote_shell_quote "$1")" <<'REMOTE'
 set -euo pipefail
 tmux has-session -t "$1"
 REMOTE
 }
 
 remote_cat_file() {
-  "${SSH_CMD[@]}" "$SSH_TARGET" 'bash -s' -- "$1" <<'REMOTE'
+  "${SSH_CMD[@]}" "$SSH_TARGET" 'bash -s' -- "$(remote_shell_quote "$1")" <<'REMOTE'
 set -euo pipefail
 cat "$1"
 REMOTE
 }
 
 remote_dir_exists() {
-  "${SSH_CMD[@]}" "$SSH_TARGET" 'bash -s' -- "$1" <<'REMOTE'
+  "${SSH_CMD[@]}" "$SSH_TARGET" 'bash -s' -- "$(remote_shell_quote "$1")" <<'REMOTE'
 set -euo pipefail
 [[ -d "$1" ]]
 REMOTE
@@ -265,12 +292,17 @@ copy_remote_build_log() {
 }
 
 log "Preparing remote workspace metadata"
-"${SSH_CMD[@]}" "$SSH_TARGET" 'bash -s' -- "$REMOTE_ROOT" "$SESSION_NAME" "$INSTALL_PREREQS" <<'REMOTE'
+"${SSH_CMD[@]}" "$SSH_TARGET" 'bash -s' -- \
+  "$(remote_shell_quote "$REMOTE_ROOT")" \
+  "$(remote_shell_quote "$SESSION_NAME")" \
+  "$(remote_shell_quote "$TMUX_SESSION_NAME")" \
+  "$(remote_shell_quote "$INSTALL_PREREQS")" <<'REMOTE'
 set -euo pipefail
 
 remote_root="$1"
 session_name="$2"
-install_prereqs="$3"
+tmux_session_name="$3"
+install_prereqs="$4"
 
 case "$remote_root" in
   "~") remote_root="$HOME" ;;
@@ -377,14 +409,36 @@ if [[ "$install_prereqs" == 'auto' ]]; then
   fi
 fi
 
-tmux has-session -t "$session_name" 2>/dev/null && {
-  printf 'error: tmux session already exists: %s\n' "$session_name" >&2
+tmux has-session -t "$tmux_session_name" 2>/dev/null && {
+  printf 'error: tmux session already exists: %s\n' "$tmux_session_name" >&2
   exit 1
 }
 
 mkdir -p "$repo_dir" "$cache_dir" "$log_dir"
 printf '%s\n%s\n%s\n%s\n' "$remote_root" "$run_root" "$repo_dir" "$docker_mode" >"$run_root/.orchestrator-state"
 REMOTE
+
+if [[ "$REBUILD_BUILDER_IMAGE" == '0' && "$BUILDER_IMAGE" == ghcr.io/* ]]; then
+  ghcr_token="${GHCR_TOKEN:-${GITHUB_TOKEN:-${GITHUB_PAT_TOKEN:-}}}"
+  if [[ -n "$ghcr_token" ]]; then
+    ghcr_username="${GHCR_USERNAME:-}"
+    [[ -n "$ghcr_username" ]] ||
+      die "GHCR_USERNAME must be set when authenticating to a private GHCR builder image"
+    log "Authenticating remote Docker to ghcr.io as $ghcr_username"
+    printf '%s' "$ghcr_token" |
+      "${SSH_CMD[@]}" "$SSH_TARGET" 'bash -c '"'"'
+        set -euo pipefail
+        ghcr_username="$1"
+        if docker info >/dev/null 2>&1; then
+          docker login ghcr.io -u "$ghcr_username" --password-stdin
+        else
+          sudo docker login ghcr.io -u "$ghcr_username" --password-stdin
+        fi >/dev/null
+      '"'"' bash' "$(remote_shell_quote "$ghcr_username")"
+  else
+    log "Warning: no GHCR_TOKEN, GITHUB_TOKEN, or GITHUB_PAT_TOKEN set; private GHCR pull may fail"
+  fi
+fi
 
 LOCAL_ARCHIVE="$(mktemp "${TMPDIR:-/tmp}/openwrt-ft-build.XXXXXXXX.tar.gz")"
 SNAPSHOT_FILE_LIST="$(mktemp "${TMPDIR:-/tmp}/openwrt-ft-files.XXXXXXXX")"
@@ -411,7 +465,10 @@ fi
 
 "${SCP_CMD[@]}" "$LOCAL_ARCHIVE" "$SSH_TARGET:$REMOTE_ARCHIVE"
 
-"${SSH_CMD[@]}" "$SSH_TARGET" 'bash -s' -- "$REMOTE_ROOT" "$SESSION_NAME" "$REMOTE_ARCHIVE" <<'REMOTE'
+"${SSH_CMD[@]}" "$SSH_TARGET" 'bash -s' -- \
+  "$(remote_shell_quote "$REMOTE_ROOT")" \
+  "$(remote_shell_quote "$SESSION_NAME")" \
+  "$(remote_shell_quote "$REMOTE_ARCHIVE")" <<'REMOTE'
 set -euo pipefail
 
 remote_root="$1"
@@ -441,16 +498,19 @@ remote_arg() {
 
 REMOTE_INFO="$(
   "${SSH_CMD[@]}" "$SSH_TARGET" 'bash -s' -- \
-    "$REMOTE_ROOT" \
-    "$SESSION_NAME" \
-    "$IMAGE_TAG" \
-    "$LOCK_FILE_REL" \
-    "$(remote_arg "$MAKE_JOBS")" \
-    "$(remote_arg "$DOWNLOAD_JOBS")" \
-    "$STRICT_MANIFEST" \
-    "$(remote_arg "$BUILDER_BASE_IMAGE")" \
-    "$(remote_arg "$UBUNTU_SNAPSHOT")" \
-    "$BUILDER_PLATFORM" <<'REMOTE'
+    "$(remote_shell_quote "$REMOTE_ROOT")" \
+    "$(remote_shell_quote "$SESSION_NAME")" \
+    "$(remote_shell_quote "$TMUX_SESSION_NAME")" \
+    "$(remote_shell_quote "$BUILDER_IMAGE")" \
+    "$(remote_shell_quote "$REBUILD_BUILDER_IMAGE")" \
+    "$(remote_shell_quote "$IMAGE_TAG")" \
+    "$(remote_shell_quote "$LOCK_FILE_REL")" \
+    "$(remote_shell_quote "$(remote_arg "$MAKE_JOBS")")" \
+    "$(remote_shell_quote "$(remote_arg "$DOWNLOAD_JOBS")")" \
+    "$(remote_shell_quote "$STRICT_MANIFEST")" \
+    "$(remote_shell_quote "$(remote_arg "$BUILDER_BASE_IMAGE")")" \
+    "$(remote_shell_quote "$(remote_arg "$UBUNTU_SNAPSHOT")")" \
+    "$(remote_shell_quote "$BUILDER_PLATFORM")" <<'REMOTE'
 set -euo pipefail
 
 empty_arg='__openwrt_ft_empty_arg__'
@@ -464,14 +524,17 @@ decode_arg() {
 
 remote_root="$1"
 session_name="$2"
-image_tag="$3"
-lock_file_rel="$4"
-make_jobs="$(decode_arg "$5")"
-download_jobs="$(decode_arg "$6")"
-strict_manifest="$7"
-builder_base_image="$(decode_arg "$8")"
-ubuntu_snapshot="$(decode_arg "$9")"
-builder_platform="${10}"
+tmux_session_name="$3"
+builder_image="$4"
+rebuild_builder_image="$5"
+image_tag="$6"
+lock_file_rel="$7"
+make_jobs="$(decode_arg "$8")"
+download_jobs="$(decode_arg "$9")"
+strict_manifest="${10}"
+builder_base_image="$(decode_arg "${11}")"
+ubuntu_snapshot="$(decode_arg "${12}")"
+builder_platform="${13}"
 
 case "$remote_root" in
   "~") remote_root="$HOME" ;;
@@ -491,6 +554,8 @@ repo_dir_q="$(printf '%q' "$repo_dir")"
 cache_dir_q="$(printf '%q' "$cache_dir")"
 log_file_q="$(printf '%q' "$log_file")"
 status_file_q="$(printf '%q' "$status_file")"
+builder_image_q="$(printf '%q' "$builder_image")"
+rebuild_builder_image_q="$(printf '%q' "$rebuild_builder_image")"
 image_tag_q="$(printf '%q' "$image_tag")"
 lock_file_q="$(printf '%q' "$lock_file_rel")"
 session_q="$(printf '%q' "$session_name")"
@@ -510,6 +575,8 @@ repo_dir=$repo_dir_q
 cache_dir=$cache_dir_q
 log_file=$log_file_q
 status_file=$status_file_q
+builder_image=$builder_image_q
+rebuild_builder_image=$rebuild_builder_image_q
 image_tag=$image_tag_q
 lock_file=$lock_file_q
 build_id=$session_q
@@ -565,8 +632,21 @@ set +e
 (
   set -euo pipefail
   cd "\$repo_dir"
-  printf '[%s] building docker image %s\n' "\$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "\$image_tag"
-  "\${docker_build_cmd[@]}" "\${docker_platform_args[@]}" "\${docker_build_args[@]}" -f docker/Dockerfile.ec2 -t "\$image_tag" .
+  case "\$rebuild_builder_image" in
+    0)
+      image_tag="\$builder_image"
+      printf '[%s] pulling docker image %s\n' "\$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "\$image_tag"
+      "\${docker_cmd[@]}" pull "\$image_tag"
+      ;;
+    1)
+      printf '[%s] building docker image %s\n' "\$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "\$image_tag"
+      "\${docker_build_cmd[@]}" "\${docker_platform_args[@]}" "\${docker_build_args[@]}" -f docker/Dockerfile.ec2 -t "\$image_tag" .
+      ;;
+    *)
+      printf 'error: unsupported rebuild_builder_image value: %s\n' "\$rebuild_builder_image" >&2
+      exit 1
+      ;;
+  esac
   printf '[%s] starting container build for %s\n' "\$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "\$lock_file"
   "\${docker_cmd[@]}" run --rm \\
     "\${docker_platform_args[@]}" \\
@@ -583,7 +663,7 @@ exit "\$status"
 EOF
 
 chmod +x "$launcher"
-tmux new-session -d -s "$session_name" "bash '$launcher'"
+tmux new-session -d -s "$tmux_session_name" "bash '$launcher'"
 
 printf 'run_root=%s\n' "$run_root"
 printf 'repo_dir=%s\n' "$repo_dir"
@@ -591,12 +671,13 @@ printf 'log_file=%s\n' "$log_file"
 printf 'artifact_dir=%s\n' "$repo_dir/build/$session_name/output"
 printf 'status_file=%s\n' "$status_file"
 printf 'session=%s\n' "$session_name"
+printf 'tmux_session=%s\n' "$tmux_session_name"
 REMOTE
 )"
 
 printf '%s\n' "$REMOTE_INFO"
 printf '\n'
-printf 'Attach: ssh %s "tmux attach -t %s"\n' "$SSH_TARGET" "$SESSION_NAME"
+printf 'Attach: ssh %s "tmux attach -t %s"\n' "$SSH_TARGET" "$TMUX_SESSION_NAME"
 printf 'Tail log: ssh %s "tail -f %s"\n' "$SSH_TARGET" "$(
   printf '%s\n' "$REMOTE_INFO" | sed -n 's/^log_file=//p'
 )"
@@ -605,13 +686,15 @@ if [[ -n "$FETCH_ARTIFACTS_DIR" ]]; then
   remote_artifact_dir="$(printf '%s\n' "$REMOTE_INFO" | sed -n 's/^artifact_dir=//p')"
   remote_status_file="$(printf '%s\n' "$REMOTE_INFO" | sed -n 's/^status_file=//p')"
   remote_log_file="$(printf '%s\n' "$REMOTE_INFO" | sed -n 's/^log_file=//p')"
+  remote_tmux_session="$(printf '%s\n' "$REMOTE_INFO" | sed -n 's/^tmux_session=//p')"
   remote_report_dir="${remote_artifact_dir%/output}/reports"
 
   [[ -n "$remote_artifact_dir" ]] || die "remote artifact directory was not reported"
   [[ -n "$remote_status_file" ]] || die "remote status file was not reported"
+  [[ -n "$remote_tmux_session" ]] || die "remote tmux session was not reported"
 
   log "Waiting for remote build session to finish: $SESSION_NAME"
-  while remote_tmux_has_session "$SESSION_NAME" >/dev/null 2>&1; do
+  while remote_tmux_has_session "$remote_tmux_session" >/dev/null 2>&1; do
     sleep 30
   done
 
