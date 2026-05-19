@@ -63,6 +63,10 @@ jobs:
         shell: bash
         run: scripts/ci/check-locks.sh
 
+      - name: Check build artifact names
+        shell: bash
+        run: scripts/ci/check-build-names.sh
+
   links:
     name: Markdown links
     runs-on: ubuntu-latest
@@ -83,5 +87,6 @@ jobs:
             --no-progress
             --timeout 20
             --max-concurrency 4
+            --exclude '^https://www\.spinics\.net/lists/kernel/msg1478599\.html$'
             README.md
             docs/**/*.md

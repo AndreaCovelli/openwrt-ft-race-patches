@@ -30,6 +30,7 @@ REFERENCE_MANIFEST='devices/wr3000e/installed.manifest'
 TARGET='mediatek'
 SUBTARGET='filogic'
 DEVICE_ID='cudy_wr3000e-v1'
+ARTIFACT_VARIANT='patched'
 
 DEFAULT_WORK_ROOT='build'
 DEFAULT_CACHE_ROOT='cache'

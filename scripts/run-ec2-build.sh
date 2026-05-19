@@ -7,6 +7,9 @@ export PATH="$HOME/.local/share/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/s
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)"
 
+# shellcheck source=scripts/lib/build-name.sh
+source "$SCRIPT_DIR/lib/build-name.sh"
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -22,7 +25,8 @@ Options:
   --vpc-id VPC              VPC override. Default: default VPC.
   --subnet-id SUBNET        Subnet override. Default: public default subnet
                             in an AZ offering the selected instance type.
-  --session NAME            Build/session name. Default: <lock-stem>-<utc>.
+  --session NAME            Build/session name. Default:
+                            openwrt-ft-<device-id>-<openwrt-version>-<variant>-<utc>.
   --artifact-dir DIR        Local artifact output. Default:
                             ./openwrt-artifacts/<session>.
   --make-jobs N             Pass through to orchestrate-ec2-build.sh.
@@ -236,9 +240,9 @@ case "$VOLUME_SIZE" in
 esac
 
 LOCK_FILE_REL="${LOCK_FILE#"$REPO_ROOT"/}"
-LOCK_STEM="$(basename "$LOCK_FILE_REL" .lock)"
+
 if [[ -z "$SESSION_NAME" ]]; then
-  SESSION_NAME="${LOCK_STEM}-$(date -u '+%Y%m%dT%H%M%SZ')"
+  SESSION_NAME="$(openwrt_default_build_name_from_lock "$LOCK_FILE")"
 fi
 if [[ -z "$ARTIFACT_DIR" ]]; then
   ARTIFACT_DIR="$REPO_ROOT/openwrt-artifacts/$SESSION_NAME"
