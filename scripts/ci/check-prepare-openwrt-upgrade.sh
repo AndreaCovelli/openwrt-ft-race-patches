@@ -164,6 +164,16 @@ chmod +x "$tmp_root/bin/git"
 export PATH="$tmp_root/bin:$PATH"
 export PREPARE_OPENWRT_UPGRADE_PATH_PREFIX="$tmp_root/bin"
 
+out_bad_cli_server="$tmp_root/prepare-upgrade-bad-cli-server.out"
+out_up_to_date="$tmp_root/prepare-upgrade-up-to-date.out"
+out_board_mismatch="$tmp_root/prepare-upgrade-board-mismatch.out"
+out_bad_path="$tmp_root/prepare-upgrade-bad-path.out"
+out_conflict="$tmp_root/prepare-upgrade-conflict.out"
+out_downgrade="$tmp_root/prepare-upgrade-downgrade.out"
+out_bad_server="$tmp_root/prepare-upgrade-bad-server.out"
+out_http_server="$tmp_root/prepare-upgrade-http-server.out"
+out_bad_build_script="$tmp_root/prepare-upgrade-bad-build-script.out"
+
 before_lock="$(sha256sum locks/build-wr3000e.lock | awk '{ print $1 }')"
 TEST_SSH_LOG="$tmp_root/dry-run-ssh.log"
 export TEST_SSH_LOG
@@ -183,10 +193,30 @@ assert_file_not_contains "$tmp_root/dry-run-ssh.log" 'cat /lib/apk/db/installed'
 assert_file_not_contains "$tmp_root/dry-run-ssh.log" 'apk list --installed'
 assert_file_not_contains "$tmp_root/dry-run-ssh.log" 'cat /etc/apk/world'
 
-if scripts/prepare-openwrt-upgrade.sh --server file:///tmp/asu --dry-run router locks/build-wr3000e.lock >/tmp/prepare-upgrade-bad-cli-server.out 2>&1; then
+custom_builder_output="$(
+  BUILD_SCRIPT=/tmp/custom-openwrt-build scripts/prepare-openwrt-upgrade.sh --dry-run router locks/build-wr3000e.lock
+)"
+assert_contains "$custom_builder_output" '/tmp/custom-openwrt-build'
+
+TEST_SSH_LOG="$tmp_root/bad-build-script-ssh.log"
+export TEST_SSH_LOG
+missing_builder_lock_before="$(sha256sum locks/build-wr3000e.lock | awk '{ print $1 }')"
+missing_builder_manifest_before="$(sha256sum devices/wr3000e/installed.manifest | awk '{ print $1 }')"
+missing_builder_world_before="$(sha256sum devices/wr3000e/apk-installed-and-world.txt | awk '{ print $1 }')"
+if BUILD_SCRIPT="$tmp_root/missing-build-wrapper" scripts/prepare-openwrt-upgrade.sh router locks/build-wr3000e.lock >"$out_bad_build_script" 2>&1; then
+  die 'missing BUILD_SCRIPT unexpectedly succeeded'
+fi
+unset TEST_SSH_LOG
+assert_file_contains "$out_bad_build_script" 'BUILD_SCRIPT is not executable'
+[[ ! -e "$tmp_root/bad-build-script-ssh.log" ]] || die 'missing BUILD_SCRIPT should fail before SSH'
+[[ "$(sha256sum locks/build-wr3000e.lock | awk '{ print $1 }')" == "$missing_builder_lock_before" ]] || die 'missing BUILD_SCRIPT modified the selected lock'
+[[ "$(sha256sum devices/wr3000e/installed.manifest | awk '{ print $1 }')" == "$missing_builder_manifest_before" ]] || die 'missing BUILD_SCRIPT modified the reference manifest'
+[[ "$(sha256sum devices/wr3000e/apk-installed-and-world.txt | awk '{ print $1 }')" == "$missing_builder_world_before" ]] || die 'missing BUILD_SCRIPT modified the world source'
+
+if scripts/prepare-openwrt-upgrade.sh --server file:///tmp/asu --dry-run router locks/build-wr3000e.lock >"$out_bad_cli_server" 2>&1; then
   die 'bad CLI ASU server URL unexpectedly succeeded'
 fi
-assert_file_contains /tmp/prepare-upgrade-bad-cli-server.out 'ASU server URL must start with https://'
+assert_file_contains "$out_bad_cli_server" 'ASU server URL must start with https://'
 
 cp devices/wr3000e/diffconfig "$repo_tmp/devices/wr3000e/diffconfig"
 cp devices/wr3000e/installed.manifest "$repo_tmp/devices/wr3000e/installed.manifest"
@@ -197,7 +227,7 @@ sed \
   -e "s|REFERENCE_MANIFEST='devices/wr3000e/installed.manifest'|REFERENCE_MANIFEST='.tmp-prepare-openwrt-upgrade-test/devices/wr3000e/installed.manifest'|" \
   locks/build-wr3000e.lock >"$repo_tmp/build-wr3000e.lock"
 
-TEST_ROUTER_RELEASE='25.12.4' scripts/prepare-openwrt-upgrade.sh --version 25.12.4 router .tmp-prepare-openwrt-upgrade-test/build-wr3000e.lock >/tmp/prepare-upgrade-up-to-date.out
+TEST_ROUTER_RELEASE='25.12.4' scripts/prepare-openwrt-upgrade.sh --version 25.12.4 router .tmp-prepare-openwrt-upgrade-test/build-wr3000e.lock >"$out_up_to_date"
 assert_file_contains "$repo_tmp/build-wr3000e.lock" "OPENWRT_TAG='v25.12.4'"
 assert_file_contains "$repo_tmp/build-wr3000e.lock" "OPENWRT_REF='ba915c2ee711d047d5be8575c1e98699119429ab'"
 assert_file_contains "$repo_tmp/build-wr3000e.lock" "FEED_PACKAGES_REF='f91b06b3faff7ad3c8cbeb1ab39cef680d2f28ed'"
@@ -207,36 +237,36 @@ assert_file_contains "$repo_tmp/devices/wr3000e/installed.manifest" 'base-files 
 assert_file_contains "$repo_tmp/devices/wr3000e/apk-installed-and-world.txt" '__WORLD__'
 assert_file_contains "$repo_tmp/devices/wr3000e/apk-installed-and-world.txt" 'kernel'
 assert_file_not_contains "$repo_tmp/devices/wr3000e/apk-installed-and-world.txt" 'kernel='
-assert_file_contains /tmp/prepare-upgrade-up-to-date.out 'Router is already on 25.12.4; build not started.'
+assert_file_contains "$out_up_to_date" 'Router is already on 25.12.4; build not started.'
 
-if TEST_ROUTER_BOARD='cudy,wr3000-v1' scripts/prepare-openwrt-upgrade.sh --dry-run router locks/build-wr3000e.lock >/tmp/prepare-upgrade-board-mismatch.out 2>&1; then
+if TEST_ROUTER_BOARD='cudy,wr3000-v1' scripts/prepare-openwrt-upgrade.sh --dry-run router locks/build-wr3000e.lock >"$out_board_mismatch" 2>&1; then
   die 'board mismatch unexpectedly succeeded'
 fi
-assert_file_contains /tmp/prepare-upgrade-board-mismatch.out 'does not support router board cudy,wr3000-v1'
+assert_file_contains "$out_board_mismatch" 'does not support router board cudy,wr3000-v1'
 
 bad_lock="$repo_tmp/bad-path.lock"
 sed "s|REFERENCE_MANIFEST='devices/wr3000e/installed.manifest'|REFERENCE_MANIFEST='../outside.manifest'|" locks/build-wr3000e.lock >"$bad_lock"
-if scripts/prepare-openwrt-upgrade.sh --dry-run router "$bad_lock" >/tmp/prepare-upgrade-bad-path.out 2>&1; then
+if scripts/prepare-openwrt-upgrade.sh --dry-run router "$bad_lock" >"$out_bad_path" 2>&1; then
   die 'bad reference manifest path unexpectedly succeeded'
 fi
-assert_file_contains /tmp/prepare-upgrade-bad-path.out 'reference manifest not found'
+assert_file_contains "$out_bad_path" 'reference manifest not found'
 
-if scripts/prepare-openwrt-upgrade.sh --dry-run router locks/build-wr3000e.lock -- --strict-manifest >/tmp/prepare-upgrade-conflict.out 2>&1; then
+if scripts/prepare-openwrt-upgrade.sh --dry-run router locks/build-wr3000e.lock -- --strict-manifest >"$out_conflict" 2>&1; then
   die 'conflicting strict manifest flag unexpectedly succeeded'
 fi
-assert_file_contains /tmp/prepare-upgrade-conflict.out 'do not pass --strict-manifest'
+assert_file_contains "$out_conflict" 'do not pass --strict-manifest'
 
-if TEST_ROUTER_RELEASE='25.12.5' scripts/prepare-openwrt-upgrade.sh --dry-run router locks/build-wr3000e.lock >/tmp/prepare-upgrade-downgrade.out 2>&1; then
+if TEST_ROUTER_RELEASE='25.12.5' scripts/prepare-openwrt-upgrade.sh --dry-run router locks/build-wr3000e.lock >"$out_downgrade" 2>&1; then
   die 'same-branch downgrade unexpectedly succeeded'
 fi
-assert_file_contains /tmp/prepare-upgrade-downgrade.out 'refusing downgrade to 25.12.4'
+assert_file_contains "$out_downgrade" 'refusing downgrade to 25.12.4'
 
-if TEST_ASU_SERVER='file:///tmp/asu' scripts/prepare-openwrt-upgrade.sh --dry-run router locks/build-wr3000e.lock >/tmp/prepare-upgrade-bad-server.out 2>&1; then
+if TEST_ASU_SERVER='file:///tmp/asu' scripts/prepare-openwrt-upgrade.sh --dry-run router locks/build-wr3000e.lock >"$out_bad_server" 2>&1; then
   die 'bad ASU server URL unexpectedly succeeded'
 fi
-assert_file_contains /tmp/prepare-upgrade-bad-server.out 'ASU server URL must start with https://'
+assert_file_contains "$out_bad_server" 'ASU server URL must start with https://'
 
-if TEST_ASU_SERVER='http://sysupgrade.example.test' scripts/prepare-openwrt-upgrade.sh --dry-run router locks/build-wr3000e.lock >/tmp/prepare-upgrade-http-server.out 2>&1; then
+if TEST_ASU_SERVER='http://sysupgrade.example.test' scripts/prepare-openwrt-upgrade.sh --dry-run router locks/build-wr3000e.lock >"$out_http_server" 2>&1; then
   die 'plain HTTP ASU server URL unexpectedly succeeded'
 fi
-assert_file_contains /tmp/prepare-upgrade-http-server.out 'ASU server URL must start with https://'
+assert_file_contains "$out_http_server" 'ASU server URL must start with https://'

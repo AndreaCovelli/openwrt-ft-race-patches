@@ -50,6 +50,9 @@ ASU-like latest release preparation:
   paths, and EC2 build command without writing files or starting a build. Use
   `--version 25.12.4` to prepare a specific release instead of the latest
   same-branch ASU release.
+- Set `BUILD_SCRIPT=/path/to/build-wrapper` to delegate to a different
+  compatible build wrapper. It must accept `--no-strict-manifest` and the lock
+  file path.
 - If the router already runs the selected latest release, the command refreshes
   the package baseline and exits without starting a build.
 - The command does not copy or flash firmware. After the artifact is fetched,

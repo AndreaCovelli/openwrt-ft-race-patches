@@ -146,6 +146,88 @@ replace_lock_assignment() {
   fi
 }
 
+rewrite_upgrade_lock() {
+  local file="$1"
+  local tmp
+  shift
+
+  tmp="$(mktemp "$(dirname -- "$file")/.openwrt-lock.XXXXXXXX")"
+  awk \
+    -v openwrt_tag="$1" \
+    -v openwrt_ref="$2" \
+    -v packages_ref="$3" \
+    -v luci_ref="$4" \
+    -v routing_ref="$5" \
+    -v telephony_ref="$6" \
+    -v video_ref="$7" '
+    function replacement(name) {
+      if (name == "OPENWRT_TAG") return openwrt_tag
+      if (name == "OPENWRT_REF") return openwrt_ref
+      if (name == "FEED_PACKAGES_REF") return packages_ref
+      if (name == "FEED_LUCI_REF") return luci_ref
+      if (name == "FEED_ROUTING_REF") return routing_ref
+      if (name == "FEED_TELEPHONY_REF") return telephony_ref
+      if (name == "FEED_VIDEO_REF") return video_ref
+      return ""
+    }
+    function update(name) {
+      if ($0 ~ "^" name "='\''") {
+        print name "='\''" replacement(name) "'\''"
+        found[name] = 1
+        return 1
+      }
+      return 0
+    }
+    update("OPENWRT_TAG") ||
+    update("OPENWRT_REF") ||
+    update("FEED_PACKAGES_REF") ||
+    update("FEED_LUCI_REF") ||
+    update("FEED_ROUTING_REF") ||
+    update("FEED_TELEPHONY_REF") ||
+    update("FEED_VIDEO_REF") {
+      next
+    }
+    { print }
+    END {
+      required[1] = "OPENWRT_TAG"
+      required[2] = "OPENWRT_REF"
+      required[3] = "FEED_PACKAGES_REF"
+      required[4] = "FEED_LUCI_REF"
+      required[5] = "FEED_ROUTING_REF"
+      required[6] = "FEED_TELEPHONY_REF"
+      required[7] = "FEED_VIDEO_REF"
+      for (i = 1; i <= 7; i++) {
+        if (!found[required[i]]) {
+          print "missing lock assignment " required[i] > "/dev/stderr"
+          exit 2
+        }
+      }
+    }
+  ' "$file" >"$tmp" || {
+    rm -f "$tmp"
+    die "$file: failed to rewrite lock assignments"
+  }
+
+  if ! cmp -s "$file" "$tmp"; then
+    mv "$tmp" "$file"
+  else
+    rm -f "$tmp"
+  fi
+}
+
+install_file_atomic() {
+  local source="$1"
+  local destination="$2"
+  local tmp
+
+  tmp="$(mktemp "$(dirname -- "$destination")/.openwrt-upgrade.$(basename -- "$destination").XXXXXXXX")"
+  cp "$source" "$tmp" || {
+    rm -f "$tmp"
+    die "failed to stage $destination"
+  }
+  mv "$tmp" "$destination"
+}
+
 fetch_json() {
   local url="$1"
   curl --proto '=https' --proto-redir '=https' --connect-timeout 10 --max-time 60 -fsSL "$url"
@@ -391,6 +473,15 @@ done
 
 SSH_TARGET="${POSITIONAL[0]}"
 LOCK_FILE="${POSITIONAL[1]}"
+BUILD_SCRIPT="${BUILD_SCRIPT:-$SCRIPT_DIR/run-ec2-build.sh}"
+[[ -n "$BUILD_SCRIPT" ]] || die "BUILD_SCRIPT must not be empty"
+if [[ "$DRY_RUN" != '1' ]]; then
+  if [[ "$BUILD_SCRIPT" == */* ]]; then
+    [[ -x "$BUILD_SCRIPT" ]] || die "BUILD_SCRIPT is not executable: $BUILD_SCRIPT"
+  else
+    command -v "$BUILD_SCRIPT" >/dev/null || die "BUILD_SCRIPT is not found in PATH: $BUILD_SCRIPT"
+  fi
+fi
 
 cd "$REPO_ROOT"
 require_cmd awk cat cmp curl date git jq mktemp mv realpath rm sed sort ssh tail timeout
@@ -404,14 +495,21 @@ LOCK_FILE_ABS="$(repo_existing_path "$LOCK_FILE" 'lock file')"
 [[ -f "$LOCK_FILE_ABS" ]] || die "lock file is not a regular file: $LOCK_FILE"
 LOCK_FILE_REL="${LOCK_FILE_ABS#"$REPO_ROOT"/}"
 
-unset OPENWRT_TAG OPENWRT_REF TARGET SUBTARGET DEVICE_ID CONFIG_FRAGMENT WORLD_SOURCE REFERENCE_MANIFEST
-unset FEED_PACKAGES_REF FEED_LUCI_REF FEED_ROUTING_REF FEED_TELEPHONY_REF FEED_VIDEO_REF
-unset OPENWRT_REPO_URL FEED_PACKAGES_URL FEED_LUCI_URL FEED_ROUTING_URL FEED_TELEPHONY_URL FEED_VIDEO_URL
+lock_vars=(
+  OPENWRT_REPO_URL OPENWRT_TAG OPENWRT_REF
+  FEED_PACKAGES_URL FEED_PACKAGES_REF
+  FEED_LUCI_URL FEED_LUCI_REF
+  FEED_ROUTING_URL FEED_ROUTING_REF
+  FEED_TELEPHONY_URL FEED_TELEPHONY_REF
+  FEED_VIDEO_URL FEED_VIDEO_REF
+  TARGET SUBTARGET DEVICE_ID CONFIG_FRAGMENT WORLD_SOURCE REFERENCE_MANIFEST
+)
+for var in "${lock_vars[@]}"; do
+  value="$(lock_value "$LOCK_FILE_ABS" "$var")"
+  printf -v "$var" '%s' "$value"
+done
 
-# shellcheck source=/dev/null
-source "$LOCK_FILE_ABS"
-
-for var in OPENWRT_REPO_URL FEED_PACKAGES_URL FEED_PACKAGES_REF FEED_LUCI_URL FEED_LUCI_REF FEED_ROUTING_URL FEED_ROUTING_REF FEED_TELEPHONY_URL FEED_TELEPHONY_REF FEED_VIDEO_URL FEED_VIDEO_REF TARGET SUBTARGET DEVICE_ID CONFIG_FRAGMENT WORLD_SOURCE REFERENCE_MANIFEST; do
+for var in OPENWRT_REPO_URL OPENWRT_REF FEED_PACKAGES_URL FEED_PACKAGES_REF FEED_LUCI_URL FEED_LUCI_REF FEED_ROUTING_URL FEED_ROUTING_REF FEED_TELEPHONY_URL FEED_TELEPHONY_REF FEED_VIDEO_URL FEED_VIDEO_REF TARGET SUBTARGET DEVICE_ID CONFIG_FRAGMENT WORLD_SOURCE REFERENCE_MANIFEST; do
   [[ -n "${!var:-}" ]] || die "$LOCK_FILE_REL: missing required variable $var"
 done
 
@@ -522,16 +620,17 @@ else
   write_manifest_from_apk_db "$ROUTER_APK_DB" "$CAPTURED_MANIFEST"
   write_apk_installed_and_world "$ROUTER_APK_LIST" "$ROUTER_WORLD" "$CAPTURED_WORLD_SOURCE"
 
-  replace_lock_assignment "$LOCK_FILE_ABS" OPENWRT_TAG "$OPENWRT_TAG_NEW"
-  replace_lock_assignment "$LOCK_FILE_ABS" OPENWRT_REF "$OPENWRT_REF_NEW"
-  replace_lock_assignment "$LOCK_FILE_ABS" FEED_PACKAGES_REF "$FEED_PACKAGES_REF_NEW"
-  replace_lock_assignment "$LOCK_FILE_ABS" FEED_LUCI_REF "$FEED_LUCI_REF_NEW"
-  replace_lock_assignment "$LOCK_FILE_ABS" FEED_ROUTING_REF "$FEED_ROUTING_REF_NEW"
-  replace_lock_assignment "$LOCK_FILE_ABS" FEED_TELEPHONY_REF "$FEED_TELEPHONY_REF_NEW"
-  replace_lock_assignment "$LOCK_FILE_ABS" FEED_VIDEO_REF "$FEED_VIDEO_REF_NEW"
-
-  cp "$CAPTURED_MANIFEST" "$REFERENCE_MANIFEST_ABS"
-  cp "$CAPTURED_WORLD_SOURCE" "$WORLD_SOURCE_ABS"
+  install_file_atomic "$CAPTURED_MANIFEST" "$REFERENCE_MANIFEST_ABS"
+  install_file_atomic "$CAPTURED_WORLD_SOURCE" "$WORLD_SOURCE_ABS"
+  rewrite_upgrade_lock \
+    "$LOCK_FILE_ABS" \
+    "$OPENWRT_TAG_NEW" \
+    "$OPENWRT_REF_NEW" \
+    "$FEED_PACKAGES_REF_NEW" \
+    "$FEED_LUCI_REF_NEW" \
+    "$FEED_ROUTING_REF_NEW" \
+    "$FEED_TELEPHONY_REF_NEW" \
+    "$FEED_VIDEO_REF_NEW"
 fi
 
 if [[ "$ROUTER_RELEASE" == "$TARGET_VERSION" ]]; then
@@ -539,7 +638,7 @@ if [[ "$ROUTER_RELEASE" == "$TARGET_VERSION" ]]; then
   exit 0
 fi
 
-BUILD_CMD=("$SCRIPT_DIR/run-ec2-build.sh" --no-strict-manifest)
+BUILD_CMD=("$BUILD_SCRIPT" --no-strict-manifest)
 if ((${#RUN_ARGS[@]} > 0)); then
   BUILD_CMD+=("${RUN_ARGS[@]}")
 fi
@@ -554,4 +653,6 @@ if [[ "$DRY_RUN" == '1' ]]; then
   exit 0
 fi
 
+trap - EXIT
+cleanup
 exec "${BUILD_CMD[@]}"
