@@ -9,6 +9,8 @@ REPO_ROOT="$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)"
 
 # shellcheck source=scripts/lib/build-name.sh
 source "$SCRIPT_DIR/lib/build-name.sh"
+# shellcheck source=scripts/lib/local-feeds.sh
+source "$SCRIPT_DIR/lib/local-feeds.sh"
 # shellcheck source=scripts/lib/prebuilt-apks.sh
 source "$SCRIPT_DIR/lib/prebuilt-apks.sh"
 
@@ -102,19 +104,6 @@ download_prebuilt_apks() {
     log "Downloading prebuilt APK: $name"
     prebuilt_apk_download_one "$DL_DIR" "$entry"
   done
-}
-
-local_feed_digest() {
-  local feed_path="$1"
-
-  (
-    cd "$feed_path"
-    find . -type f -print0 |
-      sort -z |
-      xargs -0 -r sha256sum |
-      sha256sum |
-      awk '{ print $1 }'
-  )
 }
 
 local_feed_expected_digest() {

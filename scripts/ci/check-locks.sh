@@ -12,19 +12,6 @@ require_nonempty() {
   [[ -n "${!var:-}" ]] || die "$lock: missing required variable $var"
 }
 
-local_feed_digest() {
-  local feed_path="$1"
-
-  (
-    cd "$feed_path"
-    find . -type f -print0 |
-      sort -z |
-      xargs -0 -r sha256sum |
-      sha256sum |
-      awk '{ print $1 }'
-  )
-}
-
 parse_prebuilt_apk() {
   local lock="$1"
   local entry="$2"
@@ -128,6 +115,8 @@ cd "$repo_root"
 
 # shellcheck source=scripts/lib/build-name.sh
 source "$repo_root/scripts/lib/build-name.sh"
+# shellcheck source=scripts/lib/local-feeds.sh
+source "$repo_root/scripts/lib/local-feeds.sh"
 
 mapfile -t locks < <(git ls-files 'locks/*.lock' | sort)
 ((${#locks[@]} > 0)) || die 'no lock files found'
