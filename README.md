@@ -15,6 +15,8 @@ Build entrypoints:
   `./scripts/prepare-openwrt-upgrade.sh wr3000e locks/build-wr3000e.lock -- --make-jobs 4 --download-jobs 8`
 - EC2 orchestrator: `./scripts/orchestrate-ec2-build.sh <ssh-target> locks/<device>.lock`
 - full EC2 lifecycle wrapper: `./scripts/run-ec2-build.sh locks/<device>.lock`
+- router image upgrade helper:
+  `./scripts/upgrade-router-image.sh --no-flash wr3000e ./openwrt-artifacts/<build>/<image-sysupgrade.bin>`
 
 Build verification:
 - Builds fail by default if the generated package manifest differs from the
@@ -28,6 +30,13 @@ Build verification:
 - Lock files can list `MANIFEST_BUILTIN_PACKAGE_NAMES` for packages that are
   intentionally built into the kernel on a target and therefore do not appear
   as installed packages in the generated manifest.
+- Lock files can list `PREBUILT_APKS` for pinned binary APK inputs. The builder
+  downloads those APKs into `DL_DIR`, verifies their SHA-256 checksums, and
+  writes `metadata/prebuilt-apks.tsv` into the artifact bundle. Private GitHub
+  release assets require `GITHUB_TOKEN` or `GITHUB_PAT_TOKEN` with repository
+  read access. The EC2 orchestrator downloads those assets locally and copies
+  them into the remote download cache so GitHub repository credentials are not
+  sent to the remote host.
 - To allow intentional package drift while still writing drift reports, run with
   `STRICT_MANIFEST=0 ./scripts/build-image.sh locks/<device>.lock` or pass
   `--no-strict-manifest` to the EC2 orchestrator. Missing `apk world` package
@@ -56,8 +65,9 @@ ASU-like latest release preparation:
 - If the router already runs the selected latest release, the command refreshes
   the package baseline and exits without starting a build.
 - The command does not copy or flash firmware. After the artifact is fetched,
-  verify checksums, copy the `*sysupgrade.bin` image to the router, run
-  `sysupgrade -T`, then flash manually as described below.
+  verify checksums, copy the `*sysupgrade.bin` image to the router, back up the
+  router configuration, run `sysupgrade -T`, then flash manually or with
+  `scripts/upgrade-router-image.sh` as described below.
 
 Refreshing the mac80211 patch:
 - Run this before orchestration when the patch changes and needs to be
@@ -137,9 +147,14 @@ EC2 orchestration:
   `--platform linux/arm64` only when intentionally using an arm64 builder.
 - The EC2 Docker builder pulls the private prebuilt image
   `ghcr.io/andreacovelli/patch-fix-repo/openwrt-builder:ubuntu-noble-20260410-snapshot-20260410t000000z@sha256:dd52704e37949d9e815ddc762c422258e13d6783371b7eabcde759b02e85650f`
-  by default. Because the image is private, set `GHCR_USERNAME` plus
-  `GHCR_TOKEN`, `GITHUB_TOKEN`, or `GITHUB_PAT_TOKEN` locally with package read
-  access so the remote host can authenticate to GHCR before pulling. Use
+  by default. Because the image is private, set `GHCR_TOKEN` locally with
+  package read access so the remote host can authenticate to GHCR before
+  pulling. The orchestrator uses `GHCR_USERNAME` when set, otherwise
+  `GITHUB_ACTOR`, otherwise the locally authenticated `gh` CLI account. When a
+  lock uses private `PREBUILT_APKS`, the orchestrator downloads and verifies
+  those APKs locally, copies them into the remote download cache, and does not
+  pass GitHub repository credentials into the remote host or builder container.
+  Use
   `--rebuild-builder-image` to rebuild `docker/Dockerfile.ec2` on the remote
   host. When rebuilding, the Dockerfile uses `ubuntu:noble-20260410` and the
   Ubuntu `20260410T000000Z` apt snapshot by default. Override with
@@ -160,20 +175,27 @@ EC2 orchestration:
 - Example:
   `./scripts/orchestrate-ec2-build.sh my-ec2 locks/build-wr3000p.lock`
 - Example with local artifact fetch:
-  `./scripts/orchestrate-ec2-build.sh --session openwrt-ft-cudy_wr3000p-v1-25.12.2-patched-20260519T143000Z --fetch-artifacts ./openwrt-artifacts/openwrt-ft-cudy_wr3000p-v1-25.12.2-patched-20260519T143000Z my-ec2 locks/build-wr3000p.lock`
+  `./scripts/orchestrate-ec2-build.sh --session openwrt-ft-cudy_wr3000p-v1-25.12.4-patched-20260520T143000Z --fetch-artifacts ./openwrt-artifacts/openwrt-ft-cudy_wr3000p-v1-25.12.4-patched-20260520T143000Z my-ec2 locks/build-wr3000p.lock`
 - Example with one-command EC2 provisioning and cleanup:
   `./scripts/run-ec2-build.sh --make-jobs 4 --download-jobs 8 locks/build-wr3000e.lock`
 
 Flashing the fetched image:
 - Verify the local artifact checksums before copying anything to the router:
-  `cd ./openwrt-artifacts/openwrt-ft-cudy_wr3000p-v1-25.12.2-patched-20260519T143000Z && sha256sum -c sha256sums.txt`
-- Copy the matching `*sysupgrade.bin` image to the router, not the initramfs
-  image. OpenWrt Dropbear commonly lacks SFTP, so force legacy SCP mode:
-  `scp -O *sysupgrade.bin root@192.168.1.1:/tmp/`
-- On the router, test the image first:
-  `sysupgrade -T /tmp/<image-sysupgrade.bin>`
-- If the test passes, run the actual upgrade with verbose output:
-  `sysupgrade -v /tmp/<image-sysupgrade.bin>`
+  `cd ./openwrt-artifacts/openwrt-ft-cudy_wr3000p-v1-25.12.4-patched-20260520T143000Z && sha256sum -c sha256sums.txt`
+- To automate the backup, copy, checksum, and test steps without flashing:
+  `./scripts/upgrade-router-image.sh --no-flash wr3000p ./openwrt-artifacts/<build>/<image-sysupgrade.bin>`
+- The helper writes router config backups under `./backups/` by default using
+  `sysupgrade -b`, copies the matching `*sysupgrade.bin` image to `/tmp/`,
+  verifies the remote SHA-256 against the local image, and runs
+  `sysupgrade -T`.
+- To run the same preflight and then flash after an interactive confirmation:
+  `./scripts/upgrade-router-image.sh wr3000p ./openwrt-artifacts/<build>/<image-sysupgrade.bin>`
+- To skip the prompt in an already-confirmed maintenance window:
+  `./scripts/upgrade-router-image.sh --yes wr3000p ./openwrt-artifacts/<build>/<image-sysupgrade.bin>`
+- Manual equivalent: copy the matching `*sysupgrade.bin` image to the router,
+  not the initramfs image. OpenWrt Dropbear commonly lacks SFTP, so force legacy
+  SCP mode with `scp -O`. On the router, run `sysupgrade -T` first; only if the
+  test passes, run the actual `sysupgrade`.
 
 Manual EC2 cleanup:
 - `scripts/run-ec2-build.sh` cleans up its temporary instance and security group

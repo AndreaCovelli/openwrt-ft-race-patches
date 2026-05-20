@@ -12,6 +12,117 @@ require_nonempty() {
   [[ -n "${!var:-}" ]] || die "$lock: missing required variable $var"
 }
 
+local_feed_digest() {
+  local feed_path="$1"
+
+  (
+    cd "$feed_path"
+    find . -type f -print0 |
+      sort -z |
+      xargs -0 sha256sum |
+      sha256sum |
+      awk '{ print $1 }'
+  )
+}
+
+parse_prebuilt_apk() {
+  local lock="$1"
+  local entry="$2"
+  local -n out_name="$3"
+  local -n out_file="$4"
+  local -n out_url="$5"
+  local -n out_sha256="$6"
+
+  IFS='|' read -r out_name out_file out_url out_sha256 <<<"$entry"
+  [[ -n "$out_name" && -n "$out_file" && -n "$out_url" && -n "$out_sha256" ]] ||
+    die "$lock: PREBUILT_APKS entries must use name|filename|url|sha256 format"
+}
+
+validate_prebuilt_apks() {
+  local lock="$1"
+  local entry name file url sha256
+
+  if ! declare -p PREBUILT_APKS >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local -n prebuilt_apks=PREBUILT_APKS
+  for entry in "${prebuilt_apks[@]}"; do
+    parse_prebuilt_apk "$lock" "$entry" name file url sha256
+    [[ "$name" =~ ^[A-Za-z0-9_.+-]+$ ]] ||
+      die "$lock: PREBUILT_APKS name has unsupported characters: $name"
+    [[ "$file" =~ ^[A-Za-z0-9_.+-]+\.apk$ ]] ||
+      die "$lock: PREBUILT_APKS filename must be a plain .apk basename: $file"
+    [[ "$url" == https://* ]] ||
+      die "$lock: PREBUILT_APKS URL must use https: $url"
+    [[ "$sha256" =~ ^[0-9a-f]{64}$ ]] ||
+      die "$lock: PREBUILT_APKS sha256 for $name must be a 64-character lowercase hex checksum"
+  done
+}
+
+validate_local_feeds() {
+  local lock="$1"
+  local entry name path digest package actual
+  local -A feed_names=()
+  local -A feed_digests=()
+
+  if declare -p LOCAL_FEED_SHA256S >/dev/null 2>&1; then
+    local -n local_feed_sha256s=LOCAL_FEED_SHA256S
+    for entry in "${local_feed_sha256s[@]}"; do
+      name="${entry%%:*}"
+      digest="${entry#*:}"
+      [[ -n "$name" && -n "$digest" && "$name" != "$entry" ]] ||
+        die "$lock: LOCAL_FEED_SHA256S entries must use name:sha256 format"
+      [[ "$name" =~ ^[A-Za-z0-9_][A-Za-z0-9_-]*$ ]] ||
+        die "$lock: local feed name has unsupported characters: $name"
+      [[ "$digest" =~ ^[0-9a-f]{64}$ ]] ||
+        die "$lock: LOCAL_FEED_SHA256S digest for $name must be a 64-character lowercase hex checksum"
+      feed_digests["$name"]="$digest"
+    done
+  fi
+
+  if declare -p LOCAL_FEEDS >/dev/null 2>&1; then
+    local -n local_feeds=LOCAL_FEEDS
+    for entry in "${local_feeds[@]}"; do
+      name="${entry%%:*}"
+      path="${entry#*:}"
+      [[ -n "$name" && -n "$path" && "$name" != "$entry" ]] ||
+        die "$lock: LOCAL_FEEDS entries must use name:path format"
+      [[ "$name" =~ ^[A-Za-z0-9_][A-Za-z0-9_-]*$ ]] ||
+        die "$lock: local feed name has unsupported characters: $name"
+      case "$path" in
+        /*|../*|*/../*)
+          die "$lock: LOCAL_FEEDS path must stay inside the repo: $path"
+          ;;
+      esac
+      [[ -d "$path" ]] ||
+        die "$lock: LOCAL_FEEDS path does not exist: $path"
+      [[ -n "${feed_digests[$name]:-}" ]] ||
+        die "$lock: LOCAL_FEED_SHA256S is missing digest for local feed: $name"
+      actual="$(local_feed_digest "$path")"
+      [[ "$actual" == "${feed_digests[$name]}" ]] ||
+        die "$lock: local feed checksum mismatch for $name: expected ${feed_digests[$name]} got $actual"
+      feed_names["$name"]=1
+    done
+  elif declare -p LOCAL_FEED_INSTALLS >/dev/null 2>&1; then
+    die "$lock: LOCAL_FEED_INSTALLS requires LOCAL_FEEDS"
+  fi
+
+  if declare -p LOCAL_FEED_INSTALLS >/dev/null 2>&1; then
+    local -n local_feed_installs=LOCAL_FEED_INSTALLS
+    for entry in "${local_feed_installs[@]}"; do
+      name="${entry%%:*}"
+      package="${entry#*:}"
+      [[ -n "$name" && -n "$package" && "$name" != "$entry" ]] ||
+        die "$lock: LOCAL_FEED_INSTALLS entries must use feed:package format"
+      [[ -n "${feed_names[$name]:-}" ]] ||
+        die "$lock: LOCAL_FEED_INSTALLS references unknown local feed: $name"
+      [[ "$package" =~ ^[A-Za-z0-9_.+-]+$ ]] ||
+        die "$lock: LOCAL_FEED_INSTALLS package has unsupported characters: $package"
+    done
+  fi
+}
+
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
@@ -52,7 +163,7 @@ for lock in "${locks[@]}"; do
     parsed_build_name=''
 
     unset "${required_vars[@]}"
-    unset OPENWRT_TAG
+    unset OPENWRT_TAG LOCAL_FEEDS LOCAL_FEED_INSTALLS LOCAL_FEED_SHA256S PREBUILT_APKS
 
     # shellcheck source=/dev/null
     source "$lock"
@@ -105,5 +216,8 @@ for lock in "${locks[@]}"; do
     actual_sha="$(sha256sum "$PATCH_SOURCE" | awk '{print $1}')"
     [[ "$actual_sha" == "$PATCH_SHA256" ]] ||
       die "$lock: PATCH_SHA256 mismatch for $PATCH_SOURCE: expected $PATCH_SHA256 got $actual_sha"
+
+    validate_local_feeds "$lock"
+    validate_prebuilt_apks "$lock"
   )
 done
