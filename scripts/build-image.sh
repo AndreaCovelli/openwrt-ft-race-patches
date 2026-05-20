@@ -87,14 +87,113 @@ verify_not_shallow() {
   [[ "$is_shallow" == 'false' ]] || die "repository is shallow: $repo"
 }
 
+local_feed_digest() {
+  local feed_path="$1"
+
+  (
+    cd "$feed_path"
+    find . -type f -print0 |
+      sort -z |
+      xargs -0 sha256sum |
+      sha256sum |
+      awk '{ print $1 }'
+  )
+}
+
+local_feed_expected_digest() {
+  local feed_name="$1"
+  local entry name digest
+
+  if ! declare -p LOCAL_FEED_SHA256S >/dev/null 2>&1; then
+    return 1
+  fi
+
+  local -n local_feed_sha256s=LOCAL_FEED_SHA256S
+  for entry in "${local_feed_sha256s[@]}"; do
+    name="${entry%%:*}"
+    digest="${entry#*:}"
+    if [[ "$name" == "$feed_name" && "$digest" != "$entry" ]]; then
+      printf '%s\n' "$digest"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+verify_local_feed_digests() {
+  local entry name path abs_feed_path expected actual
+
+  if ! declare -p LOCAL_FEEDS >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local -n local_feeds=LOCAL_FEEDS
+  for entry in "${local_feeds[@]}"; do
+    name="${entry%%:*}"
+    path="${entry#*:}"
+    [[ -n "$name" && -n "$path" && "$name" != "$entry" ]] ||
+      die "LOCAL_FEEDS entries must use name:path format"
+    expected="$(local_feed_expected_digest "$name")" ||
+      die "LOCAL_FEED_SHA256S is missing digest for local feed: $name"
+    [[ "$expected" =~ ^[0-9a-f]{64}$ ]] ||
+      die "LOCAL_FEED_SHA256S digest for $name must be a 64-character lowercase hex checksum"
+    abs_feed_path="$(abs_path "$path")"
+    [[ -d "$abs_feed_path" ]] || die "local feed not found: $abs_feed_path"
+    actual="$(local_feed_digest "$abs_feed_path")"
+    [[ "$actual" == "$expected" ]] ||
+      die "local feed checksum mismatch for $name: expected $expected got $actual"
+  done
+}
+
+write_local_feeds_conf() {
+  local entry name path abs_feed_path
+
+  if ! declare -p LOCAL_FEEDS >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local -n local_feeds=LOCAL_FEEDS
+  for entry in "${local_feeds[@]}"; do
+    name="${entry%%:*}"
+    path="${entry#*:}"
+    [[ -n "$name" && -n "$path" && "$name" != "$entry" ]] ||
+      die "LOCAL_FEEDS entries must use name:path format"
+    abs_feed_path="$(abs_path "$path")"
+    [[ -d "$abs_feed_path" ]] || die "local feed not found: $abs_feed_path"
+    printf 'src-link %s %s\n' "$name" "$abs_feed_path"
+  done
+}
+
 write_feeds_conf() {
   cat >"$OPENWRT_DIR/feeds.conf" <<EOF
+$(write_local_feeds_conf)
 src-git-full packages ${FEED_PACKAGES_URL}^${FEED_PACKAGES_REF}
 src-git-full luci ${FEED_LUCI_URL}^${FEED_LUCI_REF}
 src-git-full routing ${FEED_ROUTING_URL}^${FEED_ROUTING_REF}
 src-git-full telephony ${FEED_TELEPHONY_URL}^${FEED_TELEPHONY_REF}
 src-git-full video ${FEED_VIDEO_URL}^${FEED_VIDEO_REF}
 EOF
+}
+
+install_local_feed_packages() {
+  local entry feed package
+
+  if ! declare -p LOCAL_FEED_INSTALLS >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local -n local_feed_installs=LOCAL_FEED_INSTALLS
+  for entry in "${local_feed_installs[@]}"; do
+    feed="${entry%%:*}"
+    package="${entry#*:}"
+    [[ -n "$feed" && -n "$package" && "$feed" != "$entry" ]] ||
+      die "LOCAL_FEED_INSTALLS entries must use feed:package format"
+    (
+      cd "$OPENWRT_DIR"
+      ./scripts/feeds install -f -p "$feed" "$package"
+    )
+  done
 }
 
 append_extra_config() {
@@ -135,6 +234,22 @@ write_manifest_builtin_package_names() {
   done
 }
 
+write_local_feed_digests() {
+  local entry name path abs_feed_path
+
+  if ! declare -p LOCAL_FEEDS >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local -n local_feeds=LOCAL_FEEDS
+  for entry in "${local_feeds[@]}"; do
+    name="${entry%%:*}"
+    path="${entry#*:}"
+    abs_feed_path="$(abs_path "$path")"
+    printf '%s\t%s\t%s\n' "$name" "$path" "$(local_feed_digest "$abs_feed_path")"
+  done
+}
+
 strict_manifest_enabled() {
   case "${STRICT_MANIFEST:-1}" in
     1|true|TRUE|yes|YES|on|ON)
@@ -155,7 +270,7 @@ else
   STRICT_MANIFEST_MODE=0
 fi
 
-require_cmd awk comm cp cut find git head install join make mkdir nproc sed sha256sum sort tee
+require_cmd awk comm cp cut find git head install join make mkdir nproc sed sha256sum sort tee xargs
 
 PATCH_SOURCE_ABS="$(abs_path "$PATCH_SOURCE")"
 CONFIG_FRAGMENT_ABS="$(abs_path "$CONFIG_FRAGMENT")"
@@ -166,6 +281,7 @@ REFERENCE_MANIFEST_ABS="$(abs_path "$REFERENCE_MANIFEST")"
 [[ -f "$CONFIG_FRAGMENT_ABS" ]] || die "config fragment not found: $CONFIG_FRAGMENT_ABS"
 [[ -f "$WORLD_SOURCE_ABS" ]] || die "world source not found: $WORLD_SOURCE_ABS"
 [[ -f "$REFERENCE_MANIFEST_ABS" ]] || die "reference manifest not found: $REFERENCE_MANIFEST_ABS"
+verify_local_feed_digests
 
 WORK_ROOT="${WORK_ROOT:-$REPO_ROOT/$DEFAULT_WORK_ROOT}"
 CACHE_ROOT="${CACHE_ROOT:-$REPO_ROOT/$DEFAULT_CACHE_ROOT}"
@@ -244,6 +360,7 @@ log "Installing feeds"
   cd "$OPENWRT_DIR"
   ./scripts/feeds install -a
 )
+install_local_feed_packages
 
 log "Applying pinned FT patch"
 verify_sha256 "$PATCH_SOURCE_ABS" "$PATCH_SHA256"
@@ -299,6 +416,7 @@ parse_manifest "$BUILT_MANIFEST" | sort >"$REPORT_DIR/built.tsv"
 cut -f1 "$REPORT_DIR/reference.tsv" >"$REPORT_DIR/reference.names"
 cut -f1 "$REPORT_DIR/built.tsv" >"$REPORT_DIR/built.names"
 write_manifest_builtin_package_names | sort -u >"$REPORT_DIR/builtin-package-names.txt"
+write_local_feed_digests | sort >"$REPORT_DIR/local-feed-digests.tsv"
 sort -u "$REPORT_DIR/reference.names" "$REPORT_DIR/builtin-package-names.txt" >"$REPORT_DIR/reference.effective.names"
 sort -u "$REPORT_DIR/built.names" "$REPORT_DIR/builtin-package-names.txt" >"$REPORT_DIR/built.effective.names"
 
@@ -322,6 +440,7 @@ cp "$REFERENCE_MANIFEST_ABS" "$METADATA_DIR/reference.manifest"
 cp "$REPORT_DIR/reference.world" "$METADATA_DIR/reference.world"
 cp "$REPORT_DIR/final.config" "$METADATA_DIR/final.config"
 cp "$REPORT_DIR/builtin-package-names.txt" "$METADATA_DIR/builtin-package-names.txt"
+cp "$REPORT_DIR/local-feed-digests.tsv" "$METADATA_DIR/local-feed-digests.tsv"
 
 sysupgrade_sha="$(sha256sum "$SYSUPGRADE_IMAGE" | awk '{print $1}')"
 initramfs_sha="$(sha256sum "$INITRAMFS_IMAGE" | awk '{print $1}')"
