@@ -55,6 +55,14 @@ jobs:
         shell: bash
         run: scripts/ci/check-prepare-openwrt-upgrade.sh
 
+      - name: Check router image upgrade helper
+        shell: bash
+        run: scripts/ci/check-upgrade-router-image.sh
+
+      - name: Check prebuilt APK helper
+        shell: bash
+        run: scripts/ci/check-prebuilt-apks.sh
+
   repository-metadata:
     name: Lock and patch consistency
     runs-on: ubuntu-latest
