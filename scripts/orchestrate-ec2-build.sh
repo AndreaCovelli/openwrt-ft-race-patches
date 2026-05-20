@@ -768,7 +768,7 @@ if [[ -n "$FETCH_ARTIFACTS_DIR" ]]; then
         fi
       fi
       copy_remote_build_log "$remote_log_file" "$FETCH_ARTIFACTS_DIR"
-      die "remote build finished but no status file was found; inspect remote log: $remote_log_file"
+      die "remote build finished but no status file was found; inspect log: ssh $SSH_TARGET \"tail -f $(remote_shell_quote "$remote_log_file")\""
       ;;
     *[!0-9]*)
       copy_remote_build_log "$remote_log_file" "$FETCH_ARTIFACTS_DIR"

@@ -28,7 +28,7 @@ prebuilt_apk_verify_sha256() {
 }
 
 prebuilt_apk_download_token() {
-  printf '%s\n' "${GITHUB_TOKEN:-${GITHUB_PAT_TOKEN:-}}"
+  printf '%s' "${GITHUB_TOKEN:-${GITHUB_PAT_TOKEN:-}}"
 }
 
 prebuilt_apk_download_one() {
