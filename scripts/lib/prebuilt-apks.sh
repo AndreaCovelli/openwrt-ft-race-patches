@@ -28,7 +28,20 @@ prebuilt_apk_verify_sha256() {
 }
 
 prebuilt_apk_download_token() {
-  printf '%s' "${GITHUB_TOKEN:-${GITHUB_PAT_TOKEN:-}}"
+  local token=''
+
+  if command -v gh >/dev/null 2>&1; then
+    token="$(gh auth token 2>/dev/null || true)"
+    if [[ -n "$token" ]]; then
+      printf '%s' "$token"
+      return 0
+    fi
+  fi
+
+  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    printf '%s' "$GITHUB_TOKEN"
+  fi
+  return 0
 }
 
 prebuilt_apk_download_one() {
