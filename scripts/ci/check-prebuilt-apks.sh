@@ -73,6 +73,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 printf 'headers=%s\n' "${headers[*]}" >>"$log_file"
+[[ -f "$output" && ! -L "$output" ]] || {
+  printf 'expected curl output path to be an existing non-symlink temp file: %s\n' "$output" >&2
+  exit 1
+}
 cp "$payload_file" "$output"
 SH
 chmod +x "$bin_dir/curl"
@@ -92,7 +96,9 @@ if prebuilt_apk_download_one "$dl_dir" "$entry" >/dev/null 2>&1; then
   die 'JSON API response unexpectedly passed checksum validation'
 fi
 assert_file_missing "$dl_dir/usteer.apk"
-assert_file_missing "$dl_dir/usteer.apk.tmp.$$"
+if compgen -G "$dl_dir/usteer.apk.tmp.*" >/dev/null; then
+  die 'temporary APK download file was not cleaned after checksum failure'
+fi
 assert_contains "$FAKE_CURL_LOG" 'Accept: application/octet-stream'
 assert_contains "$FAKE_CURL_LOG" 'arg=--proto'
 assert_contains "$FAKE_CURL_LOG" 'arg==https'

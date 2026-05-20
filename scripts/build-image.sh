@@ -290,7 +290,7 @@ else
   STRICT_MANIFEST_MODE=0
 fi
 
-require_cmd awk comm cp curl cut find git head install join make mkdir mv nproc sed sha256sum sort tee xargs
+require_cmd awk comm cp curl cut find git head install join make mkdir mktemp mv nproc sed sha256sum sort tee xargs
 
 PATCH_SOURCE_ABS="$(abs_path "$PATCH_SOURCE")"
 CONFIG_FRAGMENT_ABS="$(abs_path "$CONFIG_FRAGMENT")"

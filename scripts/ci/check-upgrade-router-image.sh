@@ -111,18 +111,14 @@ ROUTER
         mkdir -p "$(remote_path "$3")"
         ;;
       df)
-        if [[ "${TEST_DF_WRAPPED:-0}" == '1' ]]; then
-          cat <<DF
-Filesystem           1K-blocks      Used Available Use% Mounted on
-very-long-filesystem-name-that-wraps
-                         100000         0 ${TEST_REMOTE_AVAILABLE_KIB:-100000}   0% /tmp
-DF
-        else
-          cat <<DF
+        [[ "${2:-}" == '-Pk' ]] || {
+          printf 'expected df -Pk, got: %s\n' "$cmd" >&2
+          exit 1
+        }
+        cat <<DF
 Filesystem           1K-blocks      Used Available Use% Mounted on
 tmpfs                   100000         0 ${TEST_REMOTE_AVAILABLE_KIB:-100000}   0% /tmp
 DF
-        fi
         ;;
       sha256sum)
         if [[ "${TEST_BAD_REMOTE_SHA:-0}" == '1' ]]; then
@@ -218,10 +214,6 @@ rm -f "$tmp_root/remote/tmp/test-sysupgrade.bin"
 if TEST_REMOTE_AVAILABLE_KIB=1 run_script --no-flash router "$image" >/dev/null 2>&1; then
   die 'low remote free space unexpectedly succeeded'
 fi
-assert_file_not_exists "$tmp_root/remote/tmp/test-sysupgrade.bin"
-
-: >"$TEST_SSH_LOG"
-TEST_DF_WRAPPED=1 run_script --no-flash router "$image" >/dev/null 2>&1
 assert_file_not_exists "$tmp_root/remote/tmp/test-sysupgrade.bin"
 
 if run_script --no-flash router "$image" --remote-image /tmp/../etc/config/network >/dev/null 2>&1; then

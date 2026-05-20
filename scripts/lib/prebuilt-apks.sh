@@ -52,8 +52,7 @@ prebuilt_apk_download_one() {
     rm -f "$dest"
   fi
 
-  tmp_dest="$dest.tmp.$$"
-  rm -f "$tmp_dest"
+  tmp_dest="$(mktemp "$dest.tmp.XXXXXXXX")"
 
   if [[ "$url" == https://api.github.com/* ]]; then
     curl_args+=(

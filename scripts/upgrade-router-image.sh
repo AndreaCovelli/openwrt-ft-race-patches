@@ -196,8 +196,8 @@ remote_backup_created='0'
 log "Checking remote free space in $remote_image_dir"
 ssh "$ssh_target" "mkdir -p $(remote_quote "$remote_image_dir")"
 remote_available_kib="$(
-  ssh "$ssh_target" "df -k $(remote_quote "$remote_image_dir")" |
-    awk 'END { print $(NF - 2) }'
+  ssh "$ssh_target" "df -Pk $(remote_quote "$remote_image_dir")" |
+    awk 'NR == 2 { print $4 }'
 )"
 case "$remote_available_kib" in
   ''|*[!0-9]*) die "could not determine free space for $remote_image_dir on $ssh_target" ;;
