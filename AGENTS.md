@@ -36,6 +36,8 @@ shellcheck --severity=warning --shell=bash --exclude=SC2034 locks/*.lock
 scripts/ci/check-locks.sh
 scripts/ci/check-build-names.sh
 scripts/ci/check-prepare-openwrt-upgrade.sh
+scripts/ci/check-upgrade-router-image.sh
+scripts/ci/check-prebuilt-apks.sh
 ```
 
 CI also runs a Markdown link check over `README.md` and `docs/**/*.md` with

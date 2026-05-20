@@ -1,23 +1,39 @@
 # Pinned inputs for reproducible wr3000p OpenWrt builds.
 
 OPENWRT_REPO_URL='https://git.openwrt.org/openwrt/openwrt.git'
-OPENWRT_TAG='v25.12.2'
-OPENWRT_REF='d266501ad6188cce279a487b1ce61f4f327cd496'
+OPENWRT_TAG='v25.12.4'
+OPENWRT_REF='ba915c2ee711d047d5be8575c1e98699119429ab'
 
 FEED_PACKAGES_URL='https://git.openwrt.org/feed/packages.git'
-FEED_PACKAGES_REF='268d92d3d46147efe1e81892e3a618f8bbd4806b'
+FEED_PACKAGES_REF='f91b06b3faff7ad3c8cbeb1ab39cef680d2f28ed'
 
 FEED_LUCI_URL='https://git.openwrt.org/project/luci.git'
-FEED_LUCI_REF='c8e95f1d9d867743966e0c51dc2ce48cb5bf282f'
+FEED_LUCI_REF='e9ebca7598ce2f754b76267fd66bf2b85e6e4347'
 
 FEED_ROUTING_URL='https://git.openwrt.org/feed/routing.git'
-FEED_ROUTING_REF='5b23ea12d417e5dba99788c5b34abdae81cccf33'
+FEED_ROUTING_REF='b2097c85bef85251364f59a6b2a3ed1f9f5c0c21'
 
 FEED_TELEPHONY_URL='https://git.openwrt.org/feed/telephony.git'
 FEED_TELEPHONY_REF='2618106d5846a4a542fdf5809f0d3ed228ce439b'
 
 FEED_VIDEO_URL='https://github.com/openwrt/video.git'
 FEED_VIDEO_REF='094bf58da6682f895255a35a84349a79dab4bf95'
+
+LOCAL_FEEDS=(
+  'usteer_patched:local-feeds/usteer-patched'
+)
+
+LOCAL_FEED_SHA256S=(
+  'usteer_patched:c029152f2ee005d111db759b7c79c3d6f29185e0447c506c23ce2384200a874c'
+)
+
+LOCAL_FEED_INSTALLS=(
+  'usteer_patched:usteer'
+)
+
+PREBUILT_APKS=(
+  'usteer|usteer-2026.05.04-r1.apk|https://api.github.com/repos/AndreaCovelli/usteer-apk-builder/releases/assets/424617932|76347f71ea238942cb6a8a353a169d611e290b6165d6dc3b4724757e74c68a36'
+)
 
 PATCH_SOURCE='patches/subsys/390-mac80211-defer-ap-side-ft-key-upload.patch'
 PATCH_DEST='package/kernel/mac80211/patches/subsys/390-mac80211-defer-ap-side-ft-key-upload.patch'

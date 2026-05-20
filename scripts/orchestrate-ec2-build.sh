@@ -9,6 +9,8 @@ REPO_ROOT="$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)"
 
 # shellcheck source=scripts/lib/build-name.sh
 source "$SCRIPT_DIR/lib/build-name.sh"
+# shellcheck source=scripts/lib/prebuilt-apks.sh
+source "$SCRIPT_DIR/lib/prebuilt-apks.sh"
 
 usage() {
   cat <<'EOF'
@@ -21,10 +23,10 @@ Options:
                             openwrt-ft-<device-id>-<openwrt-version>-<variant>-<utc>
   --builder-image REF       Prebuilt Docker builder image. Default:
                             ghcr.io/andreacovelli/patch-fix-repo/openwrt-builder:ubuntu-noble-20260410-snapshot-20260410t000000z@sha256:dd52704e37949d9e815ddc762c422258e13d6783371b7eabcde759b02e85650f
-                            Private GHCR images need GHCR_USERNAME and
-                            GHCR_TOKEN, GITHUB_TOKEN, or GITHUB_PAT_TOKEN set
-                            locally so the remote host can authenticate before
-                            pulling.
+                            Private GHCR images need GHCR_TOKEN set locally so
+                            the remote host can authenticate before pulling.
+                            GHCR_USERNAME is optional when GITHUB_ACTOR or an
+                            authenticated gh CLI account is available locally.
   --rebuild-builder-image   Build docker/Dockerfile.ec2 on the remote host
                             instead of pulling the prebuilt builder image.
   --image-tag TAG           Remote Docker image tag used with
@@ -198,7 +200,7 @@ done
 SSH_TARGET="${POSITIONAL[0]}"
 LOCK_FILE="$(abs_repo_path "${POSITIONAL[1]}")"
 
-require_cmd bash date git mkdir mktemp scp sed ssh tar
+require_cmd awk bash curl date git mkdir mktemp mv scp sed sha256sum ssh tar
 
 SSH_CMD=(ssh)
 SCP_CMD=(scp)
@@ -272,6 +274,34 @@ set -euo pipefail
 REMOTE
 }
 
+detect_ghcr_username() {
+  if [[ -n "${GHCR_USERNAME:-}" ]]; then
+    printf '%s\n' "$GHCR_USERNAME"
+    return 0
+  fi
+
+  if [[ -n "${GITHUB_ACTOR:-}" ]]; then
+    printf '%s\n' "$GITHUB_ACTOR"
+    return 0
+  fi
+
+  if command -v gh >/dev/null 2>&1; then
+    gh api user --jq .login 2>/dev/null || true
+  fi
+}
+
+lock_prebuilt_apks() {
+  (
+    unset PREBUILT_APKS
+    # shellcheck source=/dev/null
+    source "$LOCK_FILE"
+    if declare -p PREBUILT_APKS >/dev/null 2>&1; then
+      local -n prebuilt_apks=PREBUILT_APKS
+      printf '%s\0' "${prebuilt_apks[@]}"
+    fi
+  )
+}
+
 copy_remote_dir_contents() {
   local remote_dir="$1"
   local local_dir="$2"
@@ -292,11 +322,12 @@ copy_remote_build_log() {
 }
 
 log "Preparing remote workspace metadata"
-"${SSH_CMD[@]}" "$SSH_TARGET" 'bash -s' -- \
-  "$(remote_shell_quote "$REMOTE_ROOT")" \
-  "$(remote_shell_quote "$SESSION_NAME")" \
-  "$(remote_shell_quote "$TMUX_SESSION_NAME")" \
-  "$(remote_shell_quote "$INSTALL_PREREQS")" <<'REMOTE'
+REMOTE_SETUP_INFO="$(
+  "${SSH_CMD[@]}" "$SSH_TARGET" 'bash -s' -- \
+    "$(remote_shell_quote "$REMOTE_ROOT")" \
+    "$(remote_shell_quote "$SESSION_NAME")" \
+    "$(remote_shell_quote "$TMUX_SESSION_NAME")" \
+    "$(remote_shell_quote "$INSTALL_PREREQS")" <<'REMOTE'
 set -euo pipefail
 
 remote_root="$1"
@@ -416,14 +447,22 @@ tmux has-session -t "$tmux_session_name" 2>/dev/null && {
 
 mkdir -p "$repo_dir" "$cache_dir" "$log_dir"
 printf '%s\n%s\n%s\n%s\n' "$remote_root" "$run_root" "$repo_dir" "$docker_mode" >"$run_root/.orchestrator-state"
+printf 'remote_root=%s\n' "$remote_root"
+printf 'cache_dir=%s\n' "$cache_dir"
 REMOTE
+)"
+
+REMOTE_ROOT_EXPANDED="$(printf '%s\n' "$REMOTE_SETUP_INFO" | sed -n 's/^remote_root=//p')"
+REMOTE_CACHE_DIR="$(printf '%s\n' "$REMOTE_SETUP_INFO" | sed -n 's/^cache_dir=//p')"
+[[ -n "$REMOTE_ROOT_EXPANDED" ]] || die "remote setup did not report expanded remote root"
+[[ -n "$REMOTE_CACHE_DIR" ]] || die "remote setup did not report cache directory"
 
 if [[ "$REBUILD_BUILDER_IMAGE" == '0' && "$BUILDER_IMAGE" == ghcr.io/* ]]; then
-  ghcr_token="${GHCR_TOKEN:-${GITHUB_TOKEN:-${GITHUB_PAT_TOKEN:-}}}"
+  ghcr_token="${GHCR_TOKEN:-}"
   if [[ -n "$ghcr_token" ]]; then
-    ghcr_username="${GHCR_USERNAME:-}"
+    ghcr_username="$(detect_ghcr_username)"
     [[ -n "$ghcr_username" ]] ||
-      die "GHCR_USERNAME must be set when authenticating to a private GHCR builder image"
+      die "could not determine GHCR username; set GHCR_USERNAME or authenticate gh locally"
     log "Authenticating remote Docker to ghcr.io as $ghcr_username"
     printf '%s' "$ghcr_token" |
       "${SSH_CMD[@]}" "$SSH_TARGET" 'bash -c '"'"'
@@ -436,17 +475,25 @@ if [[ "$REBUILD_BUILDER_IMAGE" == '0' && "$BUILDER_IMAGE" == ghcr.io/* ]]; then
         fi >/dev/null
       '"'"' bash' "$(remote_shell_quote "$ghcr_username")"
   else
-    log "Warning: no GHCR_TOKEN, GITHUB_TOKEN, or GITHUB_PAT_TOKEN set; private GHCR pull may fail"
+    log "Warning: no GHCR_TOKEN set; private GHCR pull may fail"
   fi
 fi
 
 LOCAL_ARCHIVE="$(mktemp "${TMPDIR:-/tmp}/openwrt-ft-build.XXXXXXXX.tar.gz")"
 SNAPSHOT_FILE_LIST="$(mktemp "${TMPDIR:-/tmp}/openwrt-ft-files.XXXXXXXX")"
+PREBUILT_APK_CACHE="$(mktemp -d "${TMPDIR:-/tmp}/openwrt-ft-prebuilt-apks.XXXXXXXX")"
 REMOTE_ARCHIVE="/tmp/openwrt-ft-build-${SESSION_NAME}.tar.gz"
 cleanup() {
+  rm -rf "$PREBUILT_APK_CACHE"
   rm -f "$LOCAL_ARCHIVE" "$SNAPSHOT_FILE_LIST"
 }
 trap cleanup EXIT
+
+mapfile -d '' -t LOCK_PREBUILT_APKS < <(lock_prebuilt_apks)
+if ((${#LOCK_PREBUILT_APKS[@]} > 0)); then
+  log "Downloading pinned prebuilt APKs before remote build"
+  prebuilt_apk_download_all "$PREBUILT_APK_CACHE" "${LOCK_PREBUILT_APKS[@]}"
+fi
 
 if [[ "$INCLUDE_UNTRACKED" == '1' ]]; then
   log "Uploading tracked and untracked non-ignored repo files to $SSH_TARGET"
@@ -464,6 +511,16 @@ fi
 )
 
 "${SCP_CMD[@]}" "$LOCAL_ARCHIVE" "$SSH_TARGET:$REMOTE_ARCHIVE"
+
+if ((${#LOCK_PREBUILT_APKS[@]} > 0)); then
+  "${SSH_CMD[@]}" "$SSH_TARGET" 'bash -s' -- "$(remote_shell_quote "$REMOTE_CACHE_DIR")" <<'REMOTE'
+set -euo pipefail
+
+cache_dir="$1"
+mkdir -p "$cache_dir/dl"
+REMOTE
+  "${SCP_CMD[@]}" "$PREBUILT_APK_CACHE"/*.apk "$SSH_TARGET:$(remote_shell_quote "$REMOTE_CACHE_DIR")/dl/"
+fi
 
 "${SSH_CMD[@]}" "$SSH_TARGET" 'bash -s' -- \
   "$(remote_shell_quote "$REMOTE_ROOT")" \
