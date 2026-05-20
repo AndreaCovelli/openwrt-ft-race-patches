@@ -81,6 +81,27 @@ cp "$payload_file" "$output"
 SH
 chmod +x "$bin_dir/curl"
 
+cat >"$bin_dir/gh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ "${1:-}" == 'auth' && "${2:-}" == 'token' ]] || exit 1
+case "${FAKE_GH_TOKEN_MODE:-missing}" in
+  token)
+    printf '%s\n' "${FAKE_GH_TOKEN:?}"
+    ;;
+  empty)
+    ;;
+  missing)
+    exit 1
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+SH
+chmod +x "$bin_dir/gh"
+
 export PATH="$bin_dir:$PATH"
 export FAKE_CURL_LOG="$tmp_root/curl.log"
 payload="$tmp_root/payload.apk"
@@ -90,7 +111,8 @@ printf '{"message":"metadata, not an asset"}\n' >"$json_payload"
 valid_sha="$(sha256sum "$payload" | awk '{ print $1 }')"
 entry="usteer|usteer.apk|https://api.github.com/repos/owner/repo/releases/assets/1|$valid_sha"
 
-unset GITHUB_TOKEN GITHUB_PAT_TOKEN
+unset GITHUB_TOKEN
+export FAKE_GH_TOKEN_MODE='missing'
 export FAKE_CURL_PAYLOAD="$json_payload"
 if prebuilt_apk_download_one "$dl_dir" "$entry" >/dev/null 2>&1; then
   die 'JSON API response unexpectedly passed checksum validation'
@@ -122,7 +144,17 @@ assert_file_exists "$dl_dir/usteer.apk"
 assert_contains "$FAKE_CURL_LOG" 'Accept: application/octet-stream'
 
 : >"$FAKE_CURL_LOG"
-export GITHUB_TOKEN='secret-token'
+export FAKE_GH_TOKEN_MODE='empty'
+export GITHUB_TOKEN='env-token'
 rm -f "$dl_dir/usteer.apk"
 prebuilt_apk_download_one "$dl_dir" "$entry"
-assert_contains "$FAKE_CURL_LOG" 'Authorization: Bearer secret-token'
+assert_contains "$FAKE_CURL_LOG" 'Authorization: Bearer env-token'
+
+: >"$FAKE_CURL_LOG"
+export FAKE_GH_TOKEN_MODE='token'
+export FAKE_GH_TOKEN='gh-token'
+export GITHUB_TOKEN='env-token'
+rm -f "$dl_dir/usteer.apk"
+prebuilt_apk_download_one "$dl_dir" "$entry"
+assert_contains "$FAKE_CURL_LOG" 'Authorization: Bearer gh-token'
+assert_not_contains "$FAKE_CURL_LOG" 'Authorization: Bearer env-token'

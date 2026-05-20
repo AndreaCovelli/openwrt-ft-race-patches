@@ -33,10 +33,10 @@ Build verification:
 - Lock files can list `PREBUILT_APKS` for pinned binary APK inputs. The builder
   downloads those APKs into `DL_DIR`, verifies their SHA-256 checksums, and
   writes `metadata/prebuilt-apks.tsv` into the artifact bundle. Private GitHub
-  release assets require `GITHUB_TOKEN` or `GITHUB_PAT_TOKEN` with repository
-  read access. The EC2 orchestrator downloads those assets locally and copies
-  them into the remote download cache so GitHub repository credentials are not
-  sent to the remote host.
+  release assets use the local `gh auth token` credential first, then
+  `GITHUB_TOKEN` if the GitHub CLI token is unavailable. The EC2 orchestrator
+  downloads those assets locally and copies them into the remote download cache
+  so GitHub repository credentials are not sent to the remote host.
 - To allow intentional package drift while still writing drift reports, run with
   `STRICT_MANIFEST=0 ./scripts/build-image.sh locks/<device>.lock` or pass
   `--no-strict-manifest` to the EC2 orchestrator. Missing `apk world` package
@@ -152,8 +152,9 @@ EC2 orchestration:
   pulling. The orchestrator uses `GHCR_USERNAME` when set, otherwise
   `GITHUB_ACTOR`, otherwise the locally authenticated `gh` CLI account. When a
   lock uses private `PREBUILT_APKS`, the orchestrator downloads and verifies
-  those APKs locally, copies them into the remote download cache, and does not
-  pass GitHub repository credentials into the remote host or builder container.
+  those APKs locally using `gh auth token` or `GITHUB_TOKEN`, copies them into
+  the remote download cache, and does not pass GitHub repository credentials
+  into the remote host or builder container.
   Use
   `--rebuild-builder-image` to rebuild `docker/Dockerfile.ec2` on the remote
   host. When rebuilding, the Dockerfile uses `ubuntu:noble-20260410` and the
