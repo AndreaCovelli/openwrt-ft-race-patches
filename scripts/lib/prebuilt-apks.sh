@@ -41,6 +41,7 @@ prebuilt_apk_download_token() {
   if [[ -n "${GITHUB_TOKEN:-}" ]]; then
     printf '%s' "$GITHUB_TOKEN"
   fi
+  return 0
 }
 
 prebuilt_apk_download_one() {
