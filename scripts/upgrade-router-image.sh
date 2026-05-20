@@ -134,7 +134,7 @@ case "$assume_yes:$no_flash" in
   1:1) die "--yes and --no-flash cannot be used together" ;;
 esac
 
-require_cmd awk basename date dirname mkdir scp sed sha256sum ssh stat
+require_cmd awk basename date dirname grep mkdir scp sed sha256sum ssh stat
 
 image_base="$(basename "$image_path")"
 if [[ -z "$remote_image" ]]; then
@@ -197,7 +197,7 @@ log "Checking remote free space in $remote_image_dir"
 ssh "$ssh_target" "mkdir -p $(remote_quote "$remote_image_dir")"
 remote_available_kib="$(
   ssh "$ssh_target" "df -k $(remote_quote "$remote_image_dir")" |
-    awk 'NR == 2 { print $4 }'
+    awk 'END { print $(NF - 2) }'
 )"
 case "$remote_available_kib" in
   ''|*[!0-9]*) die "could not determine free space for $remote_image_dir on $ssh_target" ;;
@@ -237,5 +237,22 @@ if [[ "$assume_yes" != '1' ]]; then
 fi
 
 log "Starting sysupgrade on $ssh_target; SSH will disconnect during reboot"
-flash_started='1'
-ssh "$ssh_target" "sysupgrade $(remote_quote "$remote_image")"
+sysupgrade_start_marker='__OPENWRT_FT_SYSUPGRADE_START__'
+set +e
+sysupgrade_output="$(
+  ssh "$ssh_target" "printf '%s\n' $(remote_quote "$sysupgrade_start_marker"); exec sysupgrade $(remote_quote "$remote_image")" 2>&1
+)"
+sysupgrade_status=$?
+set -e
+if printf '%s\n' "$sysupgrade_output" | grep -Fxq -- "$sysupgrade_start_marker"; then
+  if [[ "$sysupgrade_status" == '0' || "$sysupgrade_status" == '255' ]]; then
+    flash_started='1'
+    printf '%s\n' "$sysupgrade_output" | sed "/^$sysupgrade_start_marker$/d"
+  else
+    printf '%s\n' "$sysupgrade_output" | sed "/^$sysupgrade_start_marker$/d" >&2
+    die "sysupgrade command failed after start marker with exit status $sysupgrade_status"
+  fi
+else
+  printf '%s\n' "$sysupgrade_output" >&2
+  die "ssh disconnected before sysupgrade start marker with exit status $sysupgrade_status"
+fi

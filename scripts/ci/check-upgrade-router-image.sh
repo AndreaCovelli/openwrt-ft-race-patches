@@ -62,6 +62,22 @@ DISTRIB_TARGET='mediatek/filogic'
 ROUTER
     ;;
   *)
+    if [[ "$cmd" == *'__OPENWRT_FT_SYSUPGRADE_START__'* ]]; then
+      if [[ "${TEST_FLASH_SSH_FAIL_PRESTART:-0}" == '1' ]]; then
+        if [[ "${TEST_FLASH_SSH_FAIL_PRESTART_VERBOSE:-0}" == '1' ]]; then
+          printf 'debug1: Sending command: %s\n' "$cmd" >&2
+        fi
+        exit 255
+      fi
+      printf '%s\n' '__OPENWRT_FT_SYSUPGRADE_START__'
+      image_arg="${cmd##*exec sysupgrade }"
+      eval "set -- $image_arg"
+      printf 'flash %s\n' "$1" >>"$TEST_FLASH_LOG"
+      if [[ "${TEST_FLASH_DISCONNECT:-0}" == '1' ]]; then
+        exit 255
+      fi
+      exit 0
+    fi
     eval "set -- $cmd"
     case "${1:-}" in
       sysupgrade)
@@ -76,6 +92,9 @@ ROUTER
             ;;
           /tmp/*)
             printf 'flash %s\n' "$2" >>"$TEST_FLASH_LOG"
+            if [[ "${TEST_FLASH_DISCONNECT:-0}" == '1' ]]; then
+              exit 255
+            fi
             ;;
           *)
             printf 'unexpected sysupgrade command for %s: %s\n' "$host" "$cmd" >&2
@@ -92,10 +111,18 @@ ROUTER
         mkdir -p "$(remote_path "$3")"
         ;;
       df)
-        cat <<DF
+        if [[ "${TEST_DF_WRAPPED:-0}" == '1' ]]; then
+          cat <<DF
+Filesystem           1K-blocks      Used Available Use% Mounted on
+very-long-filesystem-name-that-wraps
+                         100000         0 ${TEST_REMOTE_AVAILABLE_KIB:-100000}   0% /tmp
+DF
+        else
+          cat <<DF
 Filesystem           1K-blocks      Used Available Use% Mounted on
 tmpfs                   100000         0 ${TEST_REMOTE_AVAILABLE_KIB:-100000}   0% /tmp
 DF
+        fi
         ;;
       sha256sum)
         if [[ "${TEST_BAD_REMOTE_SHA:-0}" == '1' ]]; then
@@ -193,6 +220,10 @@ if TEST_REMOTE_AVAILABLE_KIB=1 run_script --no-flash router "$image" >/dev/null 
 fi
 assert_file_not_exists "$tmp_root/remote/tmp/test-sysupgrade.bin"
 
+: >"$TEST_SSH_LOG"
+TEST_DF_WRAPPED=1 run_script --no-flash router "$image" >/dev/null 2>&1
+assert_file_not_exists "$tmp_root/remote/tmp/test-sysupgrade.bin"
+
 if run_script --no-flash router "$image" --remote-image /tmp/../etc/config/network >/dev/null 2>&1; then
   die 'remote path traversal unexpectedly succeeded'
 fi
@@ -223,3 +254,24 @@ assert_file_not_exists "$tmp_root/remote/tmp/test-sysupgrade.bin"
 : >"$TEST_FLASH_LOG"
 run_script --yes router "$image" >/dev/null 2>&1
 assert_file_contains "$TEST_FLASH_LOG" 'flash /tmp/test-sysupgrade.bin'
+
+: >"$TEST_SSH_LOG"
+: >"$TEST_FLASH_LOG"
+TEST_FLASH_DISCONNECT=1 run_script --yes router "$image" >/dev/null 2>&1
+assert_file_contains "$TEST_FLASH_LOG" 'flash /tmp/test-sysupgrade.bin'
+
+: >"$TEST_SSH_LOG"
+: >"$TEST_FLASH_LOG"
+if TEST_FLASH_SSH_FAIL_PRESTART=1 run_script --yes router "$image" >/dev/null 2>&1; then
+  die 'pre-start ssh failure unexpectedly succeeded'
+fi
+[[ ! -s "$TEST_FLASH_LOG" ]] || die 'pre-start ssh failure unexpectedly flashed'
+assert_file_not_exists "$tmp_root/remote/tmp/test-sysupgrade.bin"
+
+: >"$TEST_SSH_LOG"
+: >"$TEST_FLASH_LOG"
+if TEST_FLASH_SSH_FAIL_PRESTART=1 TEST_FLASH_SSH_FAIL_PRESTART_VERBOSE=1 run_script --yes router "$image" >/dev/null 2>&1; then
+  die 'verbose pre-start ssh failure unexpectedly succeeded'
+fi
+[[ ! -s "$TEST_FLASH_LOG" ]] || die 'verbose pre-start ssh failure unexpectedly flashed'
+assert_file_not_exists "$tmp_root/remote/tmp/test-sysupgrade.bin"

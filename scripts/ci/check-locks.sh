@@ -19,7 +19,7 @@ local_feed_digest() {
     cd "$feed_path"
     find . -type f -print0 |
       sort -z |
-      xargs -0 sha256sum |
+      xargs -0 -r sha256sum |
       sha256sum |
       awk '{ print $1 }'
   )
