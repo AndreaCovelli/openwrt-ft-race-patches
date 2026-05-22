@@ -13,6 +13,8 @@ Build entrypoints:
 - example wrapper: `./scripts/build-wr3000p.sh`
 - ASU-like latest release preparation:
   `./scripts/prepare-openwrt-upgrade.sh wr3000e locks/build-wr3000e.lock -- --make-jobs 4 --download-jobs 8`
+- stable upgrade guide:
+  [docs/stable-openwrt-upgrade.md](docs/stable-openwrt-upgrade.md)
 - EC2 orchestrator: `./scripts/orchestrate-ec2-build.sh <ssh-target> locks/<device>.lock`
 - full EC2 lifecycle wrapper: `./scripts/run-ec2-build.sh locks/<device>.lock`
 - router image upgrade helper:
