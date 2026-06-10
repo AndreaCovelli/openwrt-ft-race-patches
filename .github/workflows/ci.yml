@@ -100,5 +100,6 @@ jobs:
             --timeout 20
             --max-concurrency 4
             --exclude '^https://www\.spinics\.net/lists/kernel/msg1478599\.html$'
+            --exclude '^https://forum\.openwrt\.org/t/daemon-err-hostapd-nl80211-kernel-reports-key-addition-failed-is-this-a-problem/100370'
             README.md
             docs/**/*.md
