@@ -1,0 +1,186 @@
+general config:
+
+This is the wifi-iface portion I would use. Keep your existing config wifi-device sections, channels,
+widths, and country settings unchanged.
+
+Replace:
+
+- REPLACE_WITH_MAIN_PASS
+- REPLACE_WITH_IOT_PASS
+- REPLACE_WITH_WR3000P_5G_BSSID
+
+If any router has radio0/radio1 reversed, swap them.
+
+wr3000p
+
+config wifi-iface 'wr3000p_vercinet_24'
+	  option device 'radio0'
+	  option mode 'ap'
+	  option network 'lan'
+	  option ssid 'VerciNet'
+	  option encryption 'sae'
+	  option key 'REPLACE_WITH_MAIN_PASS'
+	  option ieee80211w '2'
+	  option ieee80211r '1'
+	  option ieee80211k '1'
+	  option bss_transition '1'
+	  option mobility_domain '4f57'
+	  option nasid 'wr3000p-24'
+	  option ft_over_ds '0'
+	  option ft_psk_generate_local '0'
+
+config wifi-iface 'wr3000p_vercinet_5'
+	  option device 'radio1'
+	  option mode 'ap'
+	  option network 'lan'
+	  option ssid 'VerciNet'
+	  option encryption 'sae'
+	  option key 'REPLACE_WITH_MAIN_PASS'
+	  option ieee80211w '2'
+	  option ieee80211r '1'
+	  option ieee80211k '1'
+	  option bss_transition '1'
+	  option mobility_domain '4f57'
+	  option nasid 'wr3000p-5'
+	  option ft_over_ds '0'
+	  option ft_psk_generate_local '0'
+
+config wifi-iface 'wr3000p_vercinet_iot_24'
+	  option device 'radio0'
+	  option mode 'ap'
+	  option network 'lan'
+	  option ssid 'VerciNet_IoT'
+	  option encryption 'psk2'
+	  option key 'REPLACE_WITH_IOT_PASS'
+	  option ieee80211r '0'
+	  option ieee80211w '0'
+
+wr3000e
+
+config wifi-iface 'wr3000e_vercinet_24'
+	  option device 'radio0'
+	  option mode 'ap'
+	  option network 'lan'
+	  option ssid 'VerciNet'
+	  option encryption 'sae'
+	  option key 'REPLACE_WITH_MAIN_PASS'
+	  option ieee80211w '2'
+	  option ieee80211r '1'
+	  option ieee80211k '1'
+	  option bss_transition '1'
+	  option mobility_domain '4f57'
+	  option nasid 'wr3000e-24'
+	  option ft_over_ds '0'
+	  option ft_psk_generate_local '0'
+
+config wifi-iface 'wr3000e_vercinet_5'
+	  option device 'radio1'
+	  option mode 'ap'
+	  option network 'lan'
+	  option ssid 'VerciNet'
+	  option encryption 'sae'
+	  option key 'REPLACE_WITH_MAIN_PASS'
+	  option ieee80211w '2'
+	  option ieee80211r '1'
+	  option ieee80211k '1'
+	  option bss_transition '1'
+	  option mobility_domain '4f57'
+	  option nasid 'wr3000e-5'
+	  option ft_over_ds '0'
+	  option ft_psk_generate_local '0'
+
+config wifi-iface 'wr3000e_vercinet_iot_24'
+	  option device 'radio0'
+	  option mode 'ap'
+	  option network 'lan'
+	  option ssid 'VerciNet_IoT'
+	  option encryption 'psk2'
+	  option key 'REPLACE_WITH_IOT_PASS'
+	  option ieee80211r '0'
+	  option ieee80211w '0'
+
+wr3000
+
+config wifi-iface 'wr3000_backhaul_sta_5'
+	  option device 'radio1'
+	  option mode 'sta'
+	  option network 'lan'
+	  option ssid 'VerciNet'
+	  option encryption 'sae'
+	  option key 'REPLACE_WITH_MAIN_PASS'
+	  option ieee80211w '2'
+	  option wds '1'
+	  option bssid 'REPLACE_WITH_WR3000P_5G_BSSID'
+
+config wifi-iface 'wr3000_vercinet_24'
+	  option device 'radio0'
+	  option mode 'ap'
+	  option network 'lan'
+	  option ssid 'VerciNet'
+	  option encryption 'sae'
+	  option key 'REPLACE_WITH_MAIN_PASS'
+	  option ieee80211w '2'
+	  option ieee80211r '1'
+	  option ieee80211k '1'
+	  option bss_transition '1'
+	  option mobility_domain '4f57'
+	  option nasid 'wr3000-24'
+	  option ft_over_ds '0'
+	  option ft_psk_generate_local '0'
+
+# [DO NOT APPLY THIS]: the interface would go in contention with the STA-backhaul (wds-client)
+config wifi-iface 'wr3000_vercinet_5'
+	  option device 'radio1'
+	  option mode 'ap'
+	  option network 'lan'
+	  option ssid 'VerciNet'
+	  option encryption 'sae'
+	  option key 'REPLACE_WITH_MAIN_PASS'
+	  option ieee80211w '2'
+	  option ieee80211r '1'
+	  option ieee80211k '1'
+	  option bss_transition '1'
+	  option mobility_domain '4f57'
+	  option nasid 'wr3000-5'
+	  option ft_over_ds '0'
+	  option ft_psk_generate_local '0'
+
+config wifi-iface 'wr3000_vercinet_iot_24'
+	  option device 'radio0'
+	  option mode 'ap'
+	  option network 'lan'
+	  option ssid 'VerciNet_IoT'
+	  option encryption 'psk2'
+	  option key 'REPLACE_WITH_IOT_PASS'
+	  option ieee80211r '0'
+	  option ieee80211w '0'
+
+Notes:
+
+- If wr3000 should not run AP+STA on radio1, remove wr3000_vercinet_5.
+- mobility_domain must be identical on all VerciNet FT APs.
+- nasid must be unique per BSS.
+- VerciNet_IoT is intentionally left off FT.
+
+Why option ieee80211w '2' on VerciNet:
+
+- VerciNet here is pure WPA3-Personal with encryption 'sae'.
+- For pure SAE, PMF/MFP is mandatory, so ieee80211w must be 2.
+- If you change VerciNet to mixed mode, change only:
+
+option encryption 'sae-mixed'
+option ieee80211w '1'
+
+and keep ft_psk_generate_local '0'.
+
+Sources:
+
+- OpenWrt openwrt-25.12 iface.uc:
+
+https://github.com/openwrt/openwrt/blob/openwrt-25.12/package/network/config/wifi-scripts/files-ucode/usr/share/ucode/wifi/iface.uc
+- OpenWrt openwrt-25.12 ap.uc:
+
+https://github.com/openwrt/openwrt/blob/openwrt-25.12/package/network/config/wifi-scripts/files-ucode/usr/share/ucode/wifi/ap.uc
+- OpenWrt wifi-iface schema:
+
+https://github.com/openwrt/openwrt/blob/openwrt-25.12/package/network/config/wifi-scripts/files-ucode/usr/share/schema/wireless.wifi-iface.json
