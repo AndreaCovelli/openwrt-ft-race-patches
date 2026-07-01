@@ -1,7 +1,10 @@
 Patch bundle for the OpenWrt `hostapd: nl80211: kernel reports: key addition failed` FT race.
 
-Use `patches/subsys/390-mac80211-defer-ap-side-ft-key-upload.patch` in:
-`package/kernel/mac80211/patches/subsys/`
+It contains:
+- `patches/subsys/390-mac80211-defer-ap-side-ft-key-upload.patch`, installed
+  into `package/kernel/mac80211/patches/subsys/`
+- `patches/hostapd/022-hostapd-ft-readd-unassociated-sta-before-ptk.patch`,
+  installed into `package/network/services/hostapd/patches/`
 
 This repo also contains a generic reproducible OpenWrt builder plus example
 device inputs.
@@ -71,14 +74,14 @@ ASU-like latest release preparation:
   router configuration, run `sysupgrade -T`, then flash manually or with
   `scripts/upgrade-router-image.sh` as described below.
 
-Refreshing the mac80211 patch:
-- Run this before orchestration when the patch changes and needs to be
-  normalized for OpenWrt submission. The command must run from a full OpenWrt
-  checkout because it uses OpenWrt's mac80211 package, build rules, and quilt
-  patch stack.
-- Copy the local patch into the OpenWrt checkout, refresh it there, copy the
-  refreshed patch back into this repo, then update the lock-file checksum before
-  building:
+Refreshing pinned patches:
+- Run the package-specific refresh before orchestration when a patch changes
+  and needs to be normalized for OpenWrt submission. The command must run from
+  a full OpenWrt checkout because it uses OpenWrt package build rules and quilt
+  patch stacks.
+- For the mac80211 patch, copy the local patch into the OpenWrt checkout,
+  refresh it there, copy the refreshed patch back into this repo, then update
+  `PATCH_SHA256` before building:
 
 ```sh
 OPENWRT=/path/to/openwrt
@@ -98,11 +101,19 @@ sha256sum "$PATCH"
 
 - Copy the printed SHA-256 into `PATCH_SHA256` in the relevant `locks/*.lock`,
   then run `./scripts/orchestrate-ec2-build.sh <ssh-target> locks/<device>.lock`.
+- For the hostapd patch, use the same pattern with
+  `package/network/services/hostapd/patches/` and `make
+  package/network/services/hostapd/{clean,refresh} V=99`, then copy the printed
+  SHA-256 into the matching `EXTRA_PATCH_SHA256S` entry in each affected lock.
 
 What it fixes:
 - `mac80211` no longer rejects the AP-side pairwise key install that happens during the FT pre-`ASSOC` timing window just because `WLAN_STA_ASSOC` is not set yet.
 - The first hardware `set_key()` attempt is skipped until the STA is associated; the later `AUTHORIZED` transition is only an extra retry point, so this is not the naive "delete the check and stay on software crypto forever" workaround.
 - The current patch accepts only AP / AP_VLAN pre-`ASSOC` pairwise keys when a STA object already exists, then relies on the deferred upload path to push them to hardware once the STA transitions into the ready state.
+- `hostapd` re-adds an unassociated kernel STA before the first FT PTK install
+  when userspace still has a STA entry but the kernel entry was removed after
+  disassociation. This covers the FT-over-DS/WDS error path where key install
+  and `NL80211_ATTR_STA_VLAN` reassignment both need a kernel STA.
 
 Device lock inputs in this repo:
 - `locks/build-wr3000.lock`

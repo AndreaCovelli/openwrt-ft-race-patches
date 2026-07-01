@@ -40,6 +40,7 @@ if [[ ! -f "$LOCK_FILE" ]]; then
 fi
 
 unset OPENWRT_TAG OPENWRT_REF DEVICE_ID ARTIFACT_VARIANT
+unset EXTRA_PATCH_SOURCES EXTRA_PATCH_DESTS EXTRA_PATCH_SHA256S
 
 # shellcheck source=/dev/null
 source "$LOCK_FILE"
@@ -74,6 +75,88 @@ verify_sha256() {
   expected="$2"
   actual="$(sha256sum "$file" | awk '{print $1}')"
   [[ "$actual" == "$expected" ]] || die "sha256 mismatch for $file: expected $expected got $actual"
+}
+
+configure_pinned_patches() {
+  local i
+
+  PINNED_PATCH_SOURCES=("$PATCH_SOURCE")
+  PINNED_PATCH_SOURCE_ABS=("$PATCH_SOURCE_ABS")
+  PINNED_PATCH_DESTS=("$PATCH_DEST")
+  PINNED_PATCH_SHA256S=("$PATCH_SHA256")
+
+  if ! declare -p EXTRA_PATCH_SOURCES >/dev/null 2>&1 &&
+    ! declare -p EXTRA_PATCH_DESTS >/dev/null 2>&1 &&
+    ! declare -p EXTRA_PATCH_SHA256S >/dev/null 2>&1; then
+    return 0
+  fi
+
+  declare -p EXTRA_PATCH_SOURCES >/dev/null 2>&1 ||
+    die 'EXTRA_PATCH_DESTS and EXTRA_PATCH_SHA256S require EXTRA_PATCH_SOURCES'
+  declare -p EXTRA_PATCH_DESTS >/dev/null 2>&1 ||
+    die 'EXTRA_PATCH_SOURCES and EXTRA_PATCH_SHA256S require EXTRA_PATCH_DESTS'
+  declare -p EXTRA_PATCH_SHA256S >/dev/null 2>&1 ||
+    die 'EXTRA_PATCH_SOURCES and EXTRA_PATCH_DESTS require EXTRA_PATCH_SHA256S'
+
+  local -n extra_patch_sources=EXTRA_PATCH_SOURCES
+  local -n extra_patch_dests=EXTRA_PATCH_DESTS
+  local -n extra_patch_sha256s=EXTRA_PATCH_SHA256S
+
+  ((${#extra_patch_sources[@]} == ${#extra_patch_dests[@]})) ||
+    die 'EXTRA_PATCH_SOURCES and EXTRA_PATCH_DESTS must have the same length'
+  ((${#extra_patch_sources[@]} == ${#extra_patch_sha256s[@]})) ||
+    die 'EXTRA_PATCH_SOURCES and EXTRA_PATCH_SHA256S must have the same length'
+
+  for i in "${!extra_patch_sources[@]}"; do
+    [[ -n "${extra_patch_sources[$i]}" ]] || die "EXTRA_PATCH_SOURCES[$i] is empty"
+    [[ -n "${extra_patch_dests[$i]}" ]] || die "EXTRA_PATCH_DESTS[$i] is empty"
+    [[ -n "${extra_patch_sha256s[$i]}" ]] || die "EXTRA_PATCH_SHA256S[$i] is empty"
+    PINNED_PATCH_SOURCES+=("${extra_patch_sources[$i]}")
+    PINNED_PATCH_SOURCE_ABS+=("$(abs_path "${extra_patch_sources[$i]}")")
+    PINNED_PATCH_DESTS+=("${extra_patch_dests[$i]}")
+    PINNED_PATCH_SHA256S+=("${extra_patch_sha256s[$i]}")
+  done
+}
+
+verify_pinned_patch_files() {
+  local i
+
+  for i in "${!PINNED_PATCH_SOURCE_ABS[@]}"; do
+    [[ -f "${PINNED_PATCH_SOURCE_ABS[$i]}" ]] ||
+      die "patch file not found: ${PINNED_PATCH_SOURCE_ABS[$i]}"
+  done
+}
+
+apply_pinned_patches() {
+  local i source_abs dest sha256
+
+  for i in "${!PINNED_PATCH_SOURCE_ABS[@]}"; do
+    source_abs="${PINNED_PATCH_SOURCE_ABS[$i]}"
+    dest="${PINNED_PATCH_DESTS[$i]}"
+    sha256="${PINNED_PATCH_SHA256S[$i]}"
+    log "Applying pinned patch: $dest"
+    verify_sha256 "$source_abs" "$sha256"
+    install -D -m 0644 "$source_abs" "$OPENWRT_DIR/$dest"
+  done
+}
+
+write_patch_metadata() {
+  local i
+
+  for i in "${!PINNED_PATCH_SOURCES[@]}"; do
+    printf '%s\t%s\t%s\n' \
+      "${PINNED_PATCH_SOURCES[$i]}" \
+      "${PINNED_PATCH_DESTS[$i]}" \
+      "${PINNED_PATCH_SHA256S[$i]}"
+  done
+}
+
+copy_pinned_patch_metadata() {
+  local source_abs
+
+  for source_abs in "${PINNED_PATCH_SOURCE_ABS[@]}"; do
+    cp "$source_abs" "$METADATA_DIR/$(basename "$source_abs")"
+  done
 }
 
 verify_checkout() {
@@ -297,7 +380,8 @@ CONFIG_FRAGMENT_ABS="$(abs_path "$CONFIG_FRAGMENT")"
 WORLD_SOURCE_ABS="$(abs_path "$WORLD_SOURCE")"
 REFERENCE_MANIFEST_ABS="$(abs_path "$REFERENCE_MANIFEST")"
 
-[[ -f "$PATCH_SOURCE_ABS" ]] || die "patch file not found: $PATCH_SOURCE_ABS"
+configure_pinned_patches
+verify_pinned_patch_files
 [[ -f "$CONFIG_FRAGMENT_ABS" ]] || die "config fragment not found: $CONFIG_FRAGMENT_ABS"
 [[ -f "$WORLD_SOURCE_ABS" ]] || die "world source not found: $WORLD_SOURCE_ABS"
 [[ -f "$REFERENCE_MANIFEST_ABS" ]] || die "reference manifest not found: $REFERENCE_MANIFEST_ABS"
@@ -383,9 +467,7 @@ log "Installing feeds"
 )
 install_local_feed_packages
 
-log "Applying pinned FT patch"
-verify_sha256 "$PATCH_SOURCE_ABS" "$PATCH_SHA256"
-install -D -m 0644 "$PATCH_SOURCE_ABS" "$OPENWRT_DIR/$PATCH_DEST"
+apply_pinned_patches
 
 log "Writing device config"
 cp "$CONFIG_FRAGMENT_ABS" "$OPENWRT_DIR/.config"
@@ -439,6 +521,7 @@ cut -f1 "$REPORT_DIR/built.tsv" >"$REPORT_DIR/built.names"
 write_manifest_builtin_package_names | sort -u >"$REPORT_DIR/builtin-package-names.txt"
 write_local_feed_digests | sort >"$REPORT_DIR/local-feed-digests.tsv"
 write_prebuilt_apk_digests | sort >"$REPORT_DIR/prebuilt-apks.tsv"
+write_patch_metadata >"$REPORT_DIR/patches.tsv"
 sort -u "$REPORT_DIR/reference.names" "$REPORT_DIR/builtin-package-names.txt" >"$REPORT_DIR/reference.effective.names"
 sort -u "$REPORT_DIR/built.names" "$REPORT_DIR/builtin-package-names.txt" >"$REPORT_DIR/built.effective.names"
 
@@ -457,13 +540,14 @@ world_missing_package_names_count="$(count_lines "$REPORT_DIR/world-missing-pack
 
 cp "$LOCK_FILE" "$METADATA_DIR/$(basename "$LOCK_FILE")"
 cp "$CONFIG_FRAGMENT_ABS" "$METADATA_DIR/$(basename "$CONFIG_FRAGMENT_ABS")"
-cp "$PATCH_SOURCE_ABS" "$METADATA_DIR/$(basename "$PATCH_SOURCE_ABS")"
+copy_pinned_patch_metadata
 cp "$REFERENCE_MANIFEST_ABS" "$METADATA_DIR/reference.manifest"
 cp "$REPORT_DIR/reference.world" "$METADATA_DIR/reference.world"
 cp "$REPORT_DIR/final.config" "$METADATA_DIR/final.config"
 cp "$REPORT_DIR/builtin-package-names.txt" "$METADATA_DIR/builtin-package-names.txt"
 cp "$REPORT_DIR/local-feed-digests.tsv" "$METADATA_DIR/local-feed-digests.tsv"
 cp "$REPORT_DIR/prebuilt-apks.tsv" "$METADATA_DIR/prebuilt-apks.tsv"
+cp "$REPORT_DIR/patches.tsv" "$METADATA_DIR/patches.tsv"
 
 sysupgrade_sha="$(sha256sum "$SYSUPGRADE_IMAGE" | awk '{print $1}')"
 initramfs_sha="$(sha256sum "$INITRAMFS_IMAGE" | awk '{print $1}')"
@@ -484,6 +568,7 @@ routing_ref=${FEED_ROUTING_REF}
 telephony_ref=${FEED_TELEPHONY_REF}
 video_ref=${FEED_VIDEO_REF}
 patch_sha256=${PATCH_SHA256}
+patches_tsv=metadata/patches.tsv
 builder_platform=${BUILDER_PLATFORM:-unknown}
 build_log=logs/build.log
 openwrt_logs=${openwrt_logs_rel}

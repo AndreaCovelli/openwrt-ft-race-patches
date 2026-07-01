@@ -38,6 +38,15 @@ PREBUILT_APKS=(
 PATCH_SOURCE='patches/subsys/390-mac80211-defer-ap-side-ft-key-upload.patch'
 PATCH_DEST='package/kernel/mac80211/patches/subsys/390-mac80211-defer-ap-side-ft-key-upload.patch'
 PATCH_SHA256='3d9f12f85f532915fff3b73f5dac2fb4ff541a32c0ac69a3aa1f1d6aa5eb32f1'
+EXTRA_PATCH_SOURCES=(
+  'patches/hostapd/022-hostapd-ft-readd-unassociated-sta-before-ptk.patch'
+)
+EXTRA_PATCH_DESTS=(
+  'package/network/services/hostapd/patches/022-hostapd-ft-readd-unassociated-sta-before-ptk.patch'
+)
+EXTRA_PATCH_SHA256S=(
+  'f551120cc9d48b989286b1e7a50d8ab55f38492eede0144aa432dfaaf78fd49f'
+)
 
 CONFIG_FRAGMENT='devices/wr3000p/diffconfig'
 WORLD_SOURCE='devices/wr3000p/apk-installed-and-world.txt'
