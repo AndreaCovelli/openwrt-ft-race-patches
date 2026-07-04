@@ -47,6 +47,68 @@ validate_prebuilt_apks() {
   done
 }
 
+validate_extra_patch_dest() {
+  local lock="$1"
+  local dest="$2"
+
+  case "$dest" in
+    package/kernel/mac80211/patches/subsys/*.patch|package/network/services/hostapd/patches/*.patch) ;;
+    *)
+      die "$lock: extra patch destination must target mac80211 subsys or hostapd package patches: $dest"
+      ;;
+  esac
+}
+
+validate_patch_checksum() {
+  local lock="$1"
+  local source="$2"
+  local sha256="$3"
+  local var_name="$4"
+  local actual_sha
+
+  [[ "$sha256" =~ ^[0-9a-f]{64}$ ]] ||
+    die "$lock: $var_name must be a 64-character lowercase hex checksum"
+  actual_sha="$(sha256sum "$source" | awk '{print $1}')"
+  [[ "$actual_sha" == "$sha256" ]] ||
+    die "$lock: $var_name mismatch for $source: expected $sha256 got $actual_sha"
+}
+
+validate_extra_patches() {
+  local lock="$1"
+  local i
+
+  if ! declare -p EXTRA_PATCH_SOURCES >/dev/null 2>&1 &&
+    ! declare -p EXTRA_PATCH_DESTS >/dev/null 2>&1 &&
+    ! declare -p EXTRA_PATCH_SHA256S >/dev/null 2>&1; then
+    return 0
+  fi
+
+  declare -p EXTRA_PATCH_SOURCES >/dev/null 2>&1 ||
+    die "$lock: EXTRA_PATCH_DESTS and EXTRA_PATCH_SHA256S require EXTRA_PATCH_SOURCES"
+  declare -p EXTRA_PATCH_DESTS >/dev/null 2>&1 ||
+    die "$lock: EXTRA_PATCH_SOURCES and EXTRA_PATCH_SHA256S require EXTRA_PATCH_DESTS"
+  declare -p EXTRA_PATCH_SHA256S >/dev/null 2>&1 ||
+    die "$lock: EXTRA_PATCH_SOURCES and EXTRA_PATCH_DESTS require EXTRA_PATCH_SHA256S"
+
+  local -n extra_patch_sources=EXTRA_PATCH_SOURCES
+  local -n extra_patch_dests=EXTRA_PATCH_DESTS
+  local -n extra_patch_sha256s=EXTRA_PATCH_SHA256S
+
+  ((${#extra_patch_sources[@]} == ${#extra_patch_dests[@]})) ||
+    die "$lock: EXTRA_PATCH_SOURCES and EXTRA_PATCH_DESTS must have the same length"
+  ((${#extra_patch_sources[@]} == ${#extra_patch_sha256s[@]})) ||
+    die "$lock: EXTRA_PATCH_SOURCES and EXTRA_PATCH_SHA256S must have the same length"
+
+  for i in "${!extra_patch_sources[@]}"; do
+    [[ -f "${extra_patch_sources[$i]}" ]] ||
+      die "$lock: EXTRA_PATCH_SOURCES[$i] does not exist: ${extra_patch_sources[$i]}"
+    validate_extra_patch_dest "$lock" "${extra_patch_dests[$i]}"
+    [[ "$(basename "${extra_patch_sources[$i]}")" == "$(basename "${extra_patch_dests[$i]}")" ]] ||
+      die "$lock: EXTRA_PATCH_SOURCES[$i] and EXTRA_PATCH_DESTS[$i] basenames differ"
+    validate_patch_checksum "$lock" "${extra_patch_sources[$i]}" "${extra_patch_sha256s[$i]}" "EXTRA_PATCH_SHA256S[$i]"
+  done
+}
+
 validate_local_feeds() {
   local lock="$1"
   local entry name path digest package actual
@@ -153,6 +215,7 @@ for lock in "${locks[@]}"; do
 
     unset "${required_vars[@]}"
     unset OPENWRT_TAG LOCAL_FEEDS LOCAL_FEED_INSTALLS LOCAL_FEED_SHA256S PREBUILT_APKS
+    unset EXTRA_PATCH_SOURCES EXTRA_PATCH_DESTS EXTRA_PATCH_SHA256S
 
     # shellcheck source=/dev/null
     source "$lock"
@@ -173,9 +236,6 @@ for lock in "${locks[@]}"; do
       die "$lock: FEED_TELEPHONY_REF must be a full 40-character hex commit"
     [[ "$FEED_VIDEO_REF" =~ ^[0-9a-f]{40}$ ]] ||
       die "$lock: FEED_VIDEO_REF must be a full 40-character hex commit"
-    [[ "$PATCH_SHA256" =~ ^[0-9a-f]{64}$ ]] ||
-      die "$lock: PATCH_SHA256 must be a 64-character lowercase hex checksum"
-
     sourced_build_name="$(openwrt_default_build_name '20260519T143000Z')" ||
       die "$lock: cannot generate convention-compliant build artifact name"
     parsed_build_name="$(openwrt_default_build_name_from_lock "$lock" '20260519T143000Z')" ||
@@ -202,9 +262,8 @@ for lock in "${locks[@]}"; do
     [[ "$(basename "$PATCH_SOURCE")" == "$(basename "$PATCH_DEST")" ]] ||
       die "$lock: PATCH_SOURCE and PATCH_DEST basenames differ"
 
-    actual_sha="$(sha256sum "$PATCH_SOURCE" | awk '{print $1}')"
-    [[ "$actual_sha" == "$PATCH_SHA256" ]] ||
-      die "$lock: PATCH_SHA256 mismatch for $PATCH_SOURCE: expected $PATCH_SHA256 got $actual_sha"
+    validate_patch_checksum "$lock" "$PATCH_SOURCE" "$PATCH_SHA256" 'PATCH_SHA256'
+    validate_extra_patches "$lock"
 
     validate_local_feeds "$lock"
     validate_prebuilt_apks "$lock"

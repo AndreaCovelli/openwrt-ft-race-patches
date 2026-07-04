@@ -4,10 +4,10 @@
 
 These instructions apply to the whole repository.
 
-This repo maintains a reproducible OpenWrt builder and a mac80211 FT race patch
-for Cudy WR3000-family devices. Treat router firmware generation and flashing
-notes as high impact: prefer dry runs, preserve pinned inputs, and do not start
-remote builds or router upgrades unless the user explicitly asks.
+This repo maintains a reproducible OpenWrt builder and FT race patches for Cudy
+WR3000-family devices. Treat router firmware generation and flashing notes as
+high impact: prefer dry runs, preserve pinned inputs, and do not start remote
+builds or router upgrades unless the user explicitly asks.
 
 ## Repository Layout
 
@@ -15,6 +15,8 @@ remote builds or router upgrades unless the user explicitly asks.
   behavior descriptions in sync with script changes.
 - `patches/subsys/390-mac80211-defer-ap-side-ft-key-upload.patch` is copied into
   OpenWrt at `package/kernel/mac80211/patches/subsys/`.
+- `patches/hostapd/022-hostapd-ft-readd-unassociated-sta-before-ptk.patch` is
+  copied into OpenWrt at `package/network/services/hostapd/patches/`.
 - `locks/*.lock` pin OpenWrt, feeds, patch checksums, device metadata paths, and
   artifact naming fields. They are Bash files and are sourced by scripts.
 - `devices/<name>/` contains the reference `diffconfig`, installed manifest, and
@@ -69,8 +71,13 @@ Do not run those full build or EC2 commands unless the user asked for them.
 
 - When editing the mac80211 patch, update `PATCH_SHA256` in every affected
   `locks/*.lock` file. Verify with `scripts/ci/check-locks.sh`.
+- When editing extra package patches such as the hostapd patch, update the
+  matching `EXTRA_PATCH_SHA256S` entry in every affected `locks/*.lock` file.
+  Verify with `scripts/ci/check-locks.sh`.
 - Keep `PATCH_SOURCE` and `PATCH_DEST` basenames identical. `PATCH_DEST` must
   remain under `package/kernel/mac80211/patches/subsys/`.
+- Keep `EXTRA_PATCH_SOURCES` and `EXTRA_PATCH_DESTS` arrays aligned by index,
+  with matching basenames and matching `EXTRA_PATCH_SHA256S` entries.
 - Feed refs and `OPENWRT_REF` values must be full 40-character lowercase commit
   hashes.
 - `OPENWRT_TAG` is optional for main-branch compile-check locks, but stable

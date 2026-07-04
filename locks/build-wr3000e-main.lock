@@ -22,6 +22,15 @@ FEED_VIDEO_REF='d25cad605d8ce9ff536d85bdda2ad7eb2b83f883'
 PATCH_SOURCE='patches/subsys/390-mac80211-defer-ap-side-ft-key-upload.patch'
 PATCH_DEST='package/kernel/mac80211/patches/subsys/390-mac80211-defer-ap-side-ft-key-upload.patch'
 PATCH_SHA256='3d9f12f85f532915fff3b73f5dac2fb4ff541a32c0ac69a3aa1f1d6aa5eb32f1'
+EXTRA_PATCH_SOURCES=(
+  'patches/hostapd/022-hostapd-ft-readd-unassociated-sta-before-ptk.patch'
+)
+EXTRA_PATCH_DESTS=(
+  'package/network/services/hostapd/patches/022-hostapd-ft-readd-unassociated-sta-before-ptk.patch'
+)
+EXTRA_PATCH_SHA256S=(
+  '3890e029d6f1c20b95603e2eb41e93ac20a12e778196092fb9c40497a64754f4'
+)
 
 CONFIG_FRAGMENT='devices/wr3000e/diffconfig'
 WORLD_SOURCE='devices/wr3000e/apk-installed-and-world.txt'
