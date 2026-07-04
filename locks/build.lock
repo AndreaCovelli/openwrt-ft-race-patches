@@ -31,7 +31,7 @@ EXTRA_PATCH_DESTS=(
   'package/network/services/hostapd/patches/022-hostapd-ft-readd-unassociated-sta-before-ptk.patch'
 )
 EXTRA_PATCH_SHA256S=(
-  'f551120cc9d48b989286b1e7a50d8ab55f38492eede0144aa432dfaaf78fd49f'
+  '3890e029d6f1c20b95603e2eb41e93ac20a12e778196092fb9c40497a64754f4'
 )
 
 CONFIG_FRAGMENT='devices/wr3000e/diffconfig'
