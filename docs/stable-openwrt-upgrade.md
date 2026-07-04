@@ -2,7 +2,7 @@
 
 This guide describes the safe path for updating a supported Cudy WR3000-family
 router to a newer stable OpenWrt release while keeping this repository's
-mac80211 FT patch and reproducible build inputs.
+FT race patch bundle and reproducible build inputs.
 
 Run these commands from the repository root.
 

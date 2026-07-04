@@ -109,7 +109,7 @@ sha256sum "$PATCH"
 What it fixes:
 - `mac80211` no longer rejects the AP-side pairwise key install that happens during the FT pre-`ASSOC` timing window just because `WLAN_STA_ASSOC` is not set yet.
 - The first hardware `set_key()` attempt is skipped until the STA is associated; the later `AUTHORIZED` transition is only an extra retry point, so this is not the naive "delete the check and stay on software crypto forever" workaround.
-- The current patch accepts only AP / AP_VLAN pre-`ASSOC` pairwise keys when a STA object already exists, then relies on the deferred upload path to push them to hardware once the STA transitions into the ready state.
+- The mac80211 patch accepts only AP / AP_VLAN pre-`ASSOC` pairwise keys when a STA object already exists, then relies on the deferred upload path to push them to hardware once the STA transitions into the ready state.
 - `hostapd` re-adds an unassociated kernel STA before the first FT PTK install
   when userspace still has a STA entry but the kernel entry was removed after
   disassociation. This covers the FT-over-DS/WDS error path where key install
