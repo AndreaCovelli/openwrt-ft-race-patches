@@ -24,7 +24,7 @@ LOCAL_FEEDS=(
 )
 
 LOCAL_FEED_SHA256S=(
-  'usteer_patched:c029152f2ee005d111db759b7c79c3d6f29185e0447c506c23ce2384200a874c'
+  'usteer_patched:097452a6de7c7b6641a8af22bed68307f3075184850200cacc5e0a48f93c8f86'
 )
 
 LOCAL_FEED_INSTALLS=(
@@ -32,7 +32,7 @@ LOCAL_FEED_INSTALLS=(
 )
 
 PREBUILT_APKS=(
-  'usteer|usteer-2026.05.04-r1.apk|https://api.github.com/repos/AndreaCovelli/usteer-apk-builder/releases/assets/424617932|76347f71ea238942cb6a8a353a169d611e290b6165d6dc3b4724757e74c68a36'
+  'usteer|usteer-2026.05.04.25.12.5-r1.apk|https://api.github.com/repos/AndreaCovelli/usteer-apk-builder/releases/assets/467080277|22cb6ac8aa0a54c18a78202829b8caee92116dbf58ee37f12c03d422d6ac53f1'
 )
 
 PATCH_SOURCE='patches/subsys/390-mac80211-defer-ap-side-ft-key-upload.patch'
