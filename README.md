@@ -18,6 +18,7 @@ Build entrypoints:
   `./scripts/prepare-openwrt-upgrade.sh wr3000e locks/build-wr3000e.lock -- --make-jobs 4 --download-jobs 8`
 - stable upgrade guide:
   [docs/stable-openwrt-upgrade.md](docs/stable-openwrt-upgrade.md)
+- local Docker builder: `./scripts/run-local-docker-build.sh locks/<device>.lock`
 - EC2 orchestrator: `./scripts/orchestrate-ec2-build.sh <ssh-target> locks/<device>.lock`
 - full EC2 lifecycle wrapper: `./scripts/run-ec2-build.sh locks/<device>.lock`
 - router image upgrade helper:
@@ -44,8 +45,9 @@ Build verification:
   so GitHub repository credentials are not sent to the remote host.
 - To allow intentional package drift while still writing drift reports, run with
   `STRICT_MANIFEST=0 ./scripts/build-image.sh locks/<device>.lock` or pass
-  `--no-strict-manifest` to the EC2 orchestrator. Missing `apk world` package
-  names are always fatal, even when strict manifest checking is disabled.
+  `--no-strict-manifest` to the local Docker builder or EC2 orchestrator.
+  Missing `apk world` package names are always fatal, even when strict
+  manifest checking is disabled.
 
 ASU-like latest release preparation:
 - `scripts/prepare-openwrt-upgrade.sh` follows the attended-sysupgrade style of
@@ -139,6 +141,21 @@ To add another router:
 4. Copy one of the files in `locks/` and update `CONFIG_FRAGMENT`, `WORLD_SOURCE`, `REFERENCE_MANIFEST`, and `DEVICE_ID`.
 5. Set `ARTIFACT_VARIANT` to a short intent label such as `patched`.
 6. Run `./scripts/build-image.sh locks/your-device.lock`.
+
+Local Docker builds:
+- `scripts/run-local-docker-build.sh` runs the same pinned builder image used by
+  the EC2 wrapper, mounts this repo at `/workspace`, and writes artifacts to
+  `openwrt-artifacts/<build>/`.
+- The wrapper mounts the repo-local `cache/` directory at `/cache`. OpenWrt
+  source downloads use `/cache/dl`, so repeated local builds reuse the same
+  download cache instead of writing downloads under the per-build tree.
+- When a lock uses private `PREBUILT_APKS`, the wrapper downloads and verifies
+  those APKs on the host using `gh auth token` or `GITHUB_TOKEN`, then stores
+  them in `cache/dl` before starting the builder container. GitHub repository
+  credentials are not passed into the container.
+- Pass `--cache-dir <dir>` to use a different host cache directory, and
+  `--rebuild-builder-image` only when intentionally rebuilding
+  `docker/Dockerfile.ec2` locally.
 
 EC2 orchestration:
 - `scripts/orchestrate-ec2-build.sh` uploads a fresh snapshot of this repo to the EC2 host, prepares a per-run remote workspace, builds `docker/Dockerfile.ec2`, and starts the image build in a detached `tmux` session.
