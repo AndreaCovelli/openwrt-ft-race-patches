@@ -20,10 +20,11 @@ jobs:
   shell:
     name: Shell syntax and lint
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7
 
       - name: Install shellcheck
         run: |
@@ -66,10 +67,11 @@ jobs:
   repository-metadata:
     name: Lock and patch consistency
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7
 
       - name: Check lock files
         shell: bash
@@ -82,10 +84,11 @@ jobs:
   links:
     name: Markdown links
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7
 
       - name: Check Markdown links
         uses: lycheeverse/lychee-action@v2.8.0
