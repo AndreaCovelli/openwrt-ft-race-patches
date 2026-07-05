@@ -3,3 +3,4 @@
 /openwrt-artifacts/
 /.codex
 *.tar.gz
+.agents/
