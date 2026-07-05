@@ -296,6 +296,10 @@ disable_ccache_config() {
   printf '# CONFIG_CCACHE is not set\n' >>"$OPENWRT_DIR/.config"
 }
 
+write_download_cache_config() {
+  printf 'CONFIG_DOWNLOAD_FOLDER="%s"\n' "$DL_DIR" >>"$OPENWRT_DIR/.config"
+}
+
 extract_world() {
   awk 'found { print } /^__WORLD__$/ { found=1 }' "$WORLD_SOURCE_ABS"
 }
@@ -473,6 +477,7 @@ log "Writing device config"
 cp "$CONFIG_FRAGMENT_ABS" "$OPENWRT_DIR/.config"
 append_extra_config
 disable_ccache_config
+write_download_cache_config
 
 (
   cd "$OPENWRT_DIR"

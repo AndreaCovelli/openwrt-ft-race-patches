@@ -189,7 +189,7 @@ ssh "$ssh_target" "sysupgrade -b $(remote_quote "$remote_backup")"
 remote_backup_created='1'
 
 log "Copying router config backup to $local_backup"
-scp -O "$ssh_target:$(remote_quote "$remote_backup")" "$local_backup"
+scp -O "$ssh_target:$remote_backup" "$local_backup"
 ssh "$ssh_target" "rm -f $(remote_quote "$remote_backup")"
 remote_backup_created='0'
 
@@ -206,7 +206,7 @@ esac
   die "not enough free space in $remote_image_dir on $ssh_target: need ${required_remote_kib} KiB, have ${remote_available_kib} KiB"
 
 log "Copying image to $ssh_target:$remote_image"
-scp -O "$image_path" "$ssh_target:$(remote_quote "$remote_image")"
+scp -O "$image_path" "$ssh_target:$remote_image"
 remote_image_copied='1'
 
 log "Verifying remote image checksum"
@@ -245,7 +245,10 @@ sysupgrade_output="$(
 sysupgrade_status=$?
 set -e
 if printf '%s\n' "$sysupgrade_output" | grep -Fxq -- "$sysupgrade_start_marker"; then
-  if [[ "$sysupgrade_status" == '0' || "$sysupgrade_status" == '255' ]]; then
+  if [[ "$sysupgrade_status" == '0' ||
+        "$sysupgrade_status" == '255' ||
+        ( "$sysupgrade_status" == '246' &&
+          "$sysupgrade_output" == *'Commencing upgrade. Closing all shell sessions.'* ) ]]; then
     flash_started='1'
     printf '%s\n' "$sysupgrade_output" | sed "/^$sysupgrade_start_marker$/d"
   else

@@ -1,17 +1,17 @@
 # Pinned inputs for reproducible wr3000p OpenWrt builds.
 
 OPENWRT_REPO_URL='https://git.openwrt.org/openwrt/openwrt.git'
-OPENWRT_TAG='v25.12.4'
-OPENWRT_REF='ba915c2ee711d047d5be8575c1e98699119429ab'
+OPENWRT_TAG='v25.12.5'
+OPENWRT_REF='f0a60eee2fe051741c643ea6118718aae1ef17fb'
 
 FEED_PACKAGES_URL='https://git.openwrt.org/feed/packages.git'
-FEED_PACKAGES_REF='f91b06b3faff7ad3c8cbeb1ab39cef680d2f28ed'
+FEED_PACKAGES_REF='5caa62e0bc9f7fb9b0c12a23267bceb7724214dd'
 
 FEED_LUCI_URL='https://git.openwrt.org/project/luci.git'
-FEED_LUCI_REF='e9ebca7598ce2f754b76267fd66bf2b85e6e4347'
+FEED_LUCI_REF='128a7812f4be233c5dd7f7466f534fd888785caf'
 
 FEED_ROUTING_URL='https://git.openwrt.org/feed/routing.git'
-FEED_ROUTING_REF='b2097c85bef85251364f59a6b2a3ed1f9f5c0c21'
+FEED_ROUTING_REF='3d7d0dc7fa43d3eb09498417407e95a6552e5312'
 
 FEED_TELEPHONY_URL='https://git.openwrt.org/feed/telephony.git'
 FEED_TELEPHONY_REF='2618106d5846a4a542fdf5809f0d3ed228ce439b'
