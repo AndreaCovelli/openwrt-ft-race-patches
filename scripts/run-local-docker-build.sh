@@ -25,6 +25,8 @@ Options:
                             ./openwrt-artifacts/<session>.
   --builder-image REF       Prebuilt Docker builder image. Default matches
                             scripts/orchestrate-ec2-build.sh.
+  --no-pull                 Use --builder-image as a local image without
+                            pulling. Useful for locally rebuilt tags.
   --rebuild-builder-image   Build docker/Dockerfile.ec2 locally instead of
                             pulling the prebuilt builder image.
   --image-tag TAG           Local Docker image tag used with
@@ -37,6 +39,9 @@ Options:
   --download-jobs N         Export DOWNLOAD_JOBS into the container build.
   --strict-manifest         Fail if built package manifest drifts. Default.
   --no-strict-manifest      Report package drift without failing the build.
+  --ccache                  Enable OpenWrt ccache using /cache/ccache.
+  --no-ccache               Disable OpenWrt ccache. Default.
+  --ccache-maxsize SIZE     Max ccache size when enabled. Default: 20G.
   --cache-dir DIR           Host cache directory mounted at /cache. Default:
                             ./cache.
   --help                    Show this message.
@@ -82,8 +87,9 @@ abs_repo_path() {
 
 SESSION_NAME=''
 ARTIFACT_DIR=''
-BUILDER_IMAGE='ghcr.io/andreacovelli/patch-fix-repo/openwrt-builder:ubuntu-noble-20260410-snapshot-20260410t000000z@sha256:dd52704e37949d9e815ddc762c422258e13d6783371b7eabcde759b02e85650f'
+BUILDER_IMAGE='ghcr.io/andreacovelli/openwrt-ft-race-patches/openwrt-builder:ubuntu-noble-20260410-snapshot-20260410t000000z@sha256:dd52704e37949d9e815ddc762c422258e13d6783371b7eabcde759b02e85650f'
 REBUILD_BUILDER_IMAGE='0'
+PULL_BUILDER_IMAGE='1'
 IMAGE_TAG='patch-fix-openwrt-builder'
 BUILDER_PLATFORM='linux/amd64'
 BUILDER_BASE_IMAGE=''
@@ -92,6 +98,8 @@ MAKE_JOBS=''
 DOWNLOAD_JOBS=''
 STRICT_MANIFEST='1'
 HOST_CACHE_DIR='cache'
+USE_CCACHE='0'
+CCACHE_MAXSIZE='20G'
 
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
@@ -110,6 +118,10 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || die "--builder-image requires a value"
       BUILDER_IMAGE="$2"
       shift 2
+      ;;
+    --no-pull)
+      PULL_BUILDER_IMAGE='0'
+      shift
       ;;
     --rebuild-builder-image)
       REBUILD_BUILDER_IMAGE='1'
@@ -152,6 +164,19 @@ while [[ $# -gt 0 ]]; do
     --no-strict-manifest)
       STRICT_MANIFEST='0'
       shift
+      ;;
+    --ccache)
+      USE_CCACHE='1'
+      shift
+      ;;
+    --no-ccache)
+      USE_CCACHE='0'
+      shift
+      ;;
+    --ccache-maxsize)
+      [[ $# -ge 2 ]] || die "--ccache-maxsize requires a value"
+      CCACHE_MAXSIZE="$2"
+      shift 2
       ;;
     --cache-dir)
       [[ $# -ge 2 ]] || die "--cache-dir requires a value"
@@ -205,6 +230,10 @@ case "$STRICT_MANIFEST" in
   0|1) ;;
   *) die "strict manifest value must be 0 or 1" ;;
 esac
+case "$USE_CCACHE" in
+  0|1) ;;
+  *) die "ccache value must be 0 or 1" ;;
+esac
 
 [[ -n "$BUILDER_PLATFORM" ]] || die "--platform must not be empty"
 [[ -n "$BUILDER_IMAGE" ]] || die "--builder-image must not be empty"
@@ -245,8 +274,13 @@ fi
 case "$REBUILD_BUILDER_IMAGE" in
   0)
     IMAGE_TAG="$BUILDER_IMAGE"
-    log "Pulling Docker builder image: $IMAGE_TAG"
-    docker pull "$IMAGE_TAG"
+    if [[ "$PULL_BUILDER_IMAGE" == '1' ]]; then
+      log "Pulling Docker builder image: $IMAGE_TAG"
+      docker pull "$IMAGE_TAG"
+    else
+      log "Using local Docker builder image without pull: $IMAGE_TAG"
+      docker image inspect "$IMAGE_TAG" >/dev/null
+    fi
     ;;
   1)
     log "Building Docker builder image: $IMAGE_TAG"
@@ -262,16 +296,22 @@ case "$REBUILD_BUILDER_IMAGE" in
     ;;
 esac
 
-docker_env=(-e CACHE_ROOT=/cache -e BUILD_ID="$SESSION_NAME" -e BUILDER_PLATFORM="$BUILDER_PLATFORM" -e STRICT_MANIFEST="$STRICT_MANIFEST")
+docker_env=(-e CACHE_ROOT=/cache -e BUILD_ID="$SESSION_NAME" -e BUILDER_PLATFORM="$BUILDER_PLATFORM" -e STRICT_MANIFEST="$STRICT_MANIFEST" -e USE_CCACHE="$USE_CCACHE")
 if [[ -n "$MAKE_JOBS" ]]; then
   docker_env+=(-e MAKE_JOBS="$MAKE_JOBS")
 fi
 if [[ -n "$DOWNLOAD_JOBS" ]]; then
   docker_env+=(-e DOWNLOAD_JOBS="$DOWNLOAD_JOBS")
 fi
+if [[ "$USE_CCACHE" == '1' ]]; then
+  docker_env+=(-e CCACHE_DIR=/cache/ccache -e CCACHE_MAXSIZE="$CCACHE_MAXSIZE")
+fi
 
 log "Starting local container build for $LOCK_FILE_REL"
 mkdir -p "$HOST_CACHE_DIR"
+if [[ "$USE_CCACHE" == '1' ]]; then
+  mkdir -p "$HOST_CACHE_DIR/ccache"
+fi
 mapfile -d '' -t LOCK_PREBUILT_APKS < <(lock_prebuilt_apks)
 if ((${#LOCK_PREBUILT_APKS[@]} > 0)); then
   log "Downloading pinned prebuilt APKs into local cache"

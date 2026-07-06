@@ -149,6 +149,12 @@ Local Docker builds:
 - The wrapper mounts the repo-local `cache/` directory at `/cache`. OpenWrt
   source downloads use `/cache/dl`, so repeated local builds reuse the same
   download cache instead of writing downloads under the per-build tree.
+- Pass `--ccache` to enable OpenWrt ccache for local Docker builds. This uses
+  `cache/ccache` on the host, `/cache/ccache` in the container, and a default
+  `CCACHE_MAXSIZE` of `20G`; use `--ccache-maxsize <size>` to override it.
+  Ccache remains disabled unless explicitly enabled.
+- Use `--no-pull --builder-image <local-tag>` when testing a locally rebuilt
+  builder image that has not been pushed to a registry.
 - When a lock uses private `PREBUILT_APKS`, the wrapper downloads and verifies
   those APKs on the host using `gh auth token` or `GITHUB_TOKEN`, then stores
   them in `cache/dl` before starting the builder container. GitHub repository
@@ -176,7 +182,7 @@ EC2 orchestration:
   architecture does not silently change the builder environment. Override with
   `--platform linux/arm64` only when intentionally using an arm64 builder.
 - The EC2 Docker builder pulls the private prebuilt image
-  `ghcr.io/andreacovelli/patch-fix-repo/openwrt-builder:ubuntu-noble-20260410-snapshot-20260410t000000z@sha256:dd52704e37949d9e815ddc762c422258e13d6783371b7eabcde759b02e85650f`
+  `ghcr.io/andreacovelli/openwrt-ft-race-patches/openwrt-builder:ubuntu-noble-20260410-snapshot-20260410t000000z@sha256:dd52704e37949d9e815ddc762c422258e13d6783371b7eabcde759b02e85650f`
   by default. Because the image is private, set `GHCR_TOKEN` locally with
   package read access so the remote host can authenticate to GHCR before
   pulling. The orchestrator uses `GHCR_USERNAME` when set, otherwise

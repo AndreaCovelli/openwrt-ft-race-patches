@@ -4,10 +4,6 @@ FROM ${BUILDER_BASE_IMAGE}
 ENV DEBIAN_FRONTEND=noninteractive
 ARG UBUNTU_SNAPSHOT=20260410T000000Z
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
-
 RUN find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -print0 | \
       xargs -0 -r sed -i \
         -e "s|http://archive.ubuntu.com/ubuntu/|http://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT}/|g" \
@@ -17,6 +13,7 @@ RUN find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -print0 | \
         -e "s|http://ports.ubuntu.com/ubuntu-ports/|http://snapshot.ubuntu.com/ubuntu-ports/${UBUNTU_SNAPSHOT}/|g" \
         -e "s|https://ports.ubuntu.com/ubuntu-ports/|http://snapshot.ubuntu.com/ubuntu-ports/${UBUNTU_SNAPSHOT}/|g" && \
     printf 'Acquire::Check-Valid-Until "false";\n' >/etc/apt/apt.conf.d/99snapshot-valid-until && \
+    printf 'Acquire::https::Verify-Peer "false";\n' >/etc/apt/apt.conf.d/98snapshot-bootstrap-ca && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
       bash \
@@ -25,6 +22,7 @@ RUN find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -print0 | \
       build-essential \
       bzip2 \
       ca-certificates \
+      ccache \
       clang \
       cpio \
       curl \
@@ -66,6 +64,7 @@ RUN find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -print0 | \
       zip \
       zlib1g-dev \
       zstd && \
+    rm -f /etc/apt/apt.conf.d/98snapshot-bootstrap-ca && \
     rm -rf /var/lib/apt/lists/*
 
 RUN if ! getent group 1000 >/dev/null; then \
