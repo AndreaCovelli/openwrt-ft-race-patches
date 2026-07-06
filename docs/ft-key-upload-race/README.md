@@ -1,14 +1,14 @@
 # AP-side 802.11r FT key upload race
 
 This note explains the mac80211 side of the problem addressed by
-`patches/subsys/390-mac80211-defer-ap-side-ft-key-upload.patch` and the
+`patches/subsys/400-mac80211-defer-ap-side-ft-key-upload.patch` and the
 OpenWrt PR at <https://github.com/openwrt/openwrt/pull/23181>. The repository
 also carries a companion hostapd patch for the related FT-over-DS/WDS path where
 userspace must re-add an unassociated kernel STA before the first PTK install.
 
 As checked on 2026-05-19, that upstream PR is open and scoped to one mac80211
 patch file:
-`package/kernel/mac80211/patches/subsys/390-mac80211-defer-ap-side-ft-key-upload.patch`.
+`package/kernel/mac80211/patches/subsys/400-mac80211-defer-ap-side-ft-key-upload.patch`.
 The patch is currently proposed as an OpenWrt-local mac80211 fix, not as a
 backport of an already accepted linux-wireless commit.
 
@@ -479,7 +479,7 @@ The intended result is:
 
 ## References
 
-- Local mac80211 patch: `../../patches/subsys/390-mac80211-defer-ap-side-ft-key-upload.patch`
+- Local mac80211 patch: `../../patches/subsys/400-mac80211-defer-ap-side-ft-key-upload.patch`
 - Companion hostapd patch: `../../patches/hostapd/022-hostapd-ft-readd-unassociated-sta-before-ptk.patch`
 - OpenWrt PR: <https://github.com/openwrt/openwrt/pull/23181>
 - Historical mac80211 FT behavior discussion: <https://www.spinics.net/lists/kernel/msg1478599.html>
