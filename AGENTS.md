@@ -13,7 +13,7 @@ builds or router upgrades unless the user explicitly asks.
 
 - `README.md` is the user-facing operating guide. Keep command examples and
   behavior descriptions in sync with script changes.
-- `patches/subsys/390-mac80211-defer-ap-side-ft-key-upload.patch` is copied into
+- `patches/subsys/400-mac80211-defer-ap-side-ft-key-upload.patch` is copied into
   OpenWrt at `package/kernel/mac80211/patches/subsys/`.
 - `patches/hostapd/022-hostapd-ft-readd-unassociated-sta-before-ptk.patch` is
   copied into OpenWrt at `package/network/services/hostapd/patches/`.

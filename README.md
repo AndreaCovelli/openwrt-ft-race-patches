@@ -1,7 +1,7 @@
 Patch bundle for the OpenWrt `hostapd: nl80211: kernel reports: key addition failed` FT race.
 
 It contains:
-- `patches/subsys/390-mac80211-defer-ap-side-ft-key-upload.patch`, installed
+- `patches/subsys/400-mac80211-defer-ap-side-ft-key-upload.patch`, installed
   into `package/kernel/mac80211/patches/subsys/`
 - `patches/hostapd/022-hostapd-ft-readd-unassociated-sta-before-ptk.patch`,
   installed into `package/network/services/hostapd/patches/`
@@ -87,8 +87,8 @@ Refreshing pinned patches:
 
 ```sh
 OPENWRT=/path/to/openwrt
-PATCH=patches/subsys/390-mac80211-defer-ap-side-ft-key-upload.patch
-DEST=package/kernel/mac80211/patches/subsys/390-mac80211-defer-ap-side-ft-key-upload.patch
+PATCH=patches/subsys/400-mac80211-defer-ap-side-ft-key-upload.patch
+DEST=package/kernel/mac80211/patches/subsys/400-mac80211-defer-ap-side-ft-key-upload.patch
 
 cp "$PATCH" "$OPENWRT/$DEST"
 
