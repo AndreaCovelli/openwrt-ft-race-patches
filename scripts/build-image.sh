@@ -292,12 +292,14 @@ append_extra_config() {
   done
 }
 
-disable_ccache_config() {
-  printf '# CONFIG_CCACHE is not set\n' >>"$OPENWRT_DIR/.config"
-}
-
-write_download_cache_config() {
-  printf 'CONFIG_DOWNLOAD_FOLDER="%s"\n' "$DL_DIR" >>"$OPENWRT_DIR/.config"
+write_ccache_config() {
+  if [[ "$USE_CCACHE_MODE" == '1' ]]; then
+    printf 'CONFIG_DEVEL=y\n' >>"$OPENWRT_DIR/.config"
+    printf 'CONFIG_CCACHE=y\n' >>"$OPENWRT_DIR/.config"
+    printf 'CONFIG_CCACHE_DIR="%s"\n' "$CCACHE_DIR" >>"$OPENWRT_DIR/.config"
+  else
+    printf '# CONFIG_CCACHE is not set\n' >>"$OPENWRT_DIR/.config"
+  fi
 }
 
 extract_world() {
@@ -377,6 +379,26 @@ else
   STRICT_MANIFEST_MODE=0
 fi
 
+ccache_enabled() {
+  case "${USE_CCACHE:-0}" in
+    1|true|TRUE|yes|YES|on|ON)
+      return 0
+      ;;
+    0|false|FALSE|no|NO|off|OFF)
+      return 1
+      ;;
+    *)
+      die "USE_CCACHE must be 1/0, true/false, yes/no, or on/off"
+      ;;
+  esac
+}
+
+if ccache_enabled; then
+  USE_CCACHE_MODE=1
+else
+  USE_CCACHE_MODE=0
+fi
+
 require_cmd awk comm cp curl cut find git head install join make mkdir mktemp mv nproc sed sha256sum sort tee xargs
 
 PATCH_SOURCE_ABS="$(abs_path "$PATCH_SOURCE")"
@@ -407,11 +429,34 @@ MAKE_JOBS="${MAKE_JOBS:-$(nproc)}"
 DOWNLOAD_JOBS="${DOWNLOAD_JOBS:-$DEFAULT_DOWNLOAD_JOBS}"
 
 export DL_DIR="${DL_DIR:-$CACHE_ROOT/dl}"
+if [[ "$USE_CCACHE_MODE" == '1' ]]; then
+  command -v ccache >/dev/null 2>&1 ||
+    die 'USE_CCACHE=1 requires ccache in the builder image'
+  export CCACHE_DIR="${CCACHE_DIR:-$CACHE_ROOT/ccache}"
+  export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-20G}"
+fi
 
 [[ ! -e "$BUILD_ROOT" ]] || die "build root already exists: $BUILD_ROOT"
 
 mkdir -p "$WORK_ROOT" "$CACHE_ROOT" "$DL_DIR" "$REPORT_DIR" "$OUTPUT_DIR" "$METADATA_DIR" "$LOG_DIR"
+if [[ "$USE_CCACHE_MODE" == '1' ]]; then
+  mkdir -p "$CCACHE_DIR"
+  ccache --max-size="$CCACHE_MAXSIZE" >/dev/null
+fi
 : >"$BUILD_LOG"
+
+write_ccache_stats() {
+  local label="$1"
+
+  if [[ "$USE_CCACHE_MODE" != '1' ]]; then
+    return 0
+  fi
+
+  {
+    printf '== %s ==\n' "$label"
+    ccache -s || true
+  } >>"$REPORT_DIR/ccache-stats.txt"
+}
 
 copy_openwrt_logs() {
   [[ -d "${OPENWRT_DIR:-}/logs" ]] || return 0
@@ -476,8 +521,7 @@ apply_pinned_patches
 log "Writing device config"
 cp "$CONFIG_FRAGMENT_ABS" "$OPENWRT_DIR/.config"
 append_extra_config
-disable_ccache_config
-write_download_cache_config
+write_ccache_config
 
 (
   cd "$OPENWRT_DIR"
@@ -491,14 +535,16 @@ extract_world >"$REPORT_DIR/reference.world"
 log "Downloading sources"
 (
   cd "$OPENWRT_DIR"
-  make download -j"$DOWNLOAD_JOBS"
+  make DL_DIR="$DL_DIR" download -j"$DOWNLOAD_JOBS"
 )
 
 log "Building image"
+write_ccache_stats "before build"
 (
   cd "$OPENWRT_DIR"
-  make -j"$MAKE_JOBS"
+  make DL_DIR="$DL_DIR" -j"$MAKE_JOBS"
 )
+write_ccache_stats "after build"
 copy_openwrt_logs
 
 ARTIFACT_DIR="$OPENWRT_DIR/bin/targets/$TARGET/$SUBTARGET"
@@ -553,6 +599,9 @@ cp "$REPORT_DIR/builtin-package-names.txt" "$METADATA_DIR/builtin-package-names.
 cp "$REPORT_DIR/local-feed-digests.tsv" "$METADATA_DIR/local-feed-digests.tsv"
 cp "$REPORT_DIR/prebuilt-apks.tsv" "$METADATA_DIR/prebuilt-apks.tsv"
 cp "$REPORT_DIR/patches.tsv" "$METADATA_DIR/patches.tsv"
+if [[ -f "$REPORT_DIR/ccache-stats.txt" ]]; then
+  cp "$REPORT_DIR/ccache-stats.txt" "$METADATA_DIR/ccache-stats.txt"
+fi
 
 sysupgrade_sha="$(sha256sum "$SYSUPGRADE_IMAGE" | awk '{print $1}')"
 initramfs_sha="$(sha256sum "$INITRAMFS_IMAGE" | awk '{print $1}')"
@@ -582,6 +631,10 @@ sysupgrade_sha256=${sysupgrade_sha}
 initramfs_image=$(basename "$INITRAMFS_IMAGE")
 initramfs_sha256=${initramfs_sha}
 strict_manifest=${STRICT_MANIFEST_MODE}
+ccache=${USE_CCACHE_MODE}
+ccache_dir=${CCACHE_DIR:-}
+ccache_maxsize=${CCACHE_MAXSIZE:-}
+ccache_stats=$(if [[ -f "$REPORT_DIR/ccache-stats.txt" ]]; then printf 'metadata/ccache-stats.txt'; fi)
 builtin_package_names=${builtin_package_names_count}
 missing_package_names=${missing_package_names_count}
 extra_package_names=${extra_package_names_count}
