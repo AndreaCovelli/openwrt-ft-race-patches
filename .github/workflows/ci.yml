@@ -4,9 +4,19 @@ on:
   push:
     branches:
       - main
+    paths: &ci_paths
+      - .github/workflows/ci.yml
+      - README.md
+      - devices/**
+      - docs/**
+      - local-feeds/**
+      - locks/**
+      - patches/**
+      - scripts/**
   pull_request:
     branches:
       - main
+    paths: *ci_paths
   workflow_dispatch:
 
 permissions:
