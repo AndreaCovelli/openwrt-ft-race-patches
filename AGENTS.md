@@ -29,6 +29,16 @@ builds or router upgrades unless the user explicitly asks.
 
 ## Development Commands
 
+Use the committed Mise configuration for the complete validation suite:
+
+```sh
+mise install
+mise run check
+```
+
+Run an individual group with `mise run check:shell`,
+`mise run check:metadata`, or `mise run check:links`.
+
 Run the focused checks that match your change:
 
 ```sh

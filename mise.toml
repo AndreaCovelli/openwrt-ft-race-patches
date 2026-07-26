@@ -1,0 +1,56 @@
+[settings]
+lockfile = true
+
+[tools]
+actionlint = "1.7.12"
+lychee = "0.24.2"
+shellcheck = "0.11.0"
+
+[tasks."check:shell"]
+description = "Validate shell scripts and the GitHub Actions workflow"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+
+mapfile -t files < <(git ls-files 'scripts/*.sh' 'scripts/**/*.sh' 'locks/*.lock' | sort -u)
+for file in "${files[@]}"; do
+  bash -n "$file"
+done
+
+mapfile -t scripts < <(git ls-files 'scripts/*.sh' 'scripts/**/*.sh' | sort -u)
+shellcheck --severity=warning -x "${scripts[@]}"
+
+mapfile -t locks < <(git ls-files 'locks/*.lock' | sort)
+shellcheck --severity=warning --shell=bash --exclude=SC2034 "${locks[@]}"
+
+scripts/ci/check-prepare-openwrt-upgrade.sh
+scripts/ci/check-upgrade-router-image.sh
+scripts/ci/check-prebuilt-apks.sh
+actionlint .github/workflows/ci.yml
+'''
+
+[tasks."check:metadata"]
+description = "Validate lock files, patches, and build artifact names"
+run = [
+  "scripts/ci/check-locks.sh",
+  "scripts/ci/check-build-names.sh",
+]
+
+[tasks."check:links"]
+description = "Check Markdown links"
+run = '''
+lychee \
+  --root-dir . \
+  --verbose \
+  --no-progress \
+  --timeout 20 \
+  --max-concurrency 4 \
+  --exclude '^https://www\.spinics\.net/lists/kernel/msg1478599\.html$' \
+  --exclude '^https://forum\.openwrt\.org/t/daemon-err-hostapd-nl80211-kernel-reports-key-addition-failed-is-this-a-problem/100370' \
+  README.md \
+  'docs/**/*.md'
+'''
+
+[tasks.check]
+description = "Run all repository checks"
+depends = ["check:shell", "check:metadata", "check:links"]
