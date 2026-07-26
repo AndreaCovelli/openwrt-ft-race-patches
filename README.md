@@ -24,6 +24,12 @@ Build entrypoints:
 - router image upgrade helper:
   `./scripts/upgrade-router-image.sh --no-flash wr3000e ./openwrt-artifacts/<build>/<image-sysupgrade.bin>`
 
+Development checks:
+- Install the checksum-locked tools with `mise install`.
+- Run the complete local validation suite with `mise run check`.
+- Run an individual group with `mise run check:shell`,
+  `mise run check:metadata`, or `mise run check:links`.
+
 Build verification:
 - Builds fail by default if the generated package manifest differs from the
   reference manifest, including missing packages, extra packages, version

@@ -11,6 +11,8 @@ on:
       - docs/**
       - local-feeds/**
       - locks/**
+      - mise.lock
+      - mise.toml
       - patches/**
       - scripts/**
   pull_request:
@@ -36,43 +38,16 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
-      - name: Install shellcheck
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends shellcheck
+      - name: Set up mise
+        uses: jdx/mise-action@v4.2.3
+        with:
+          version: 2026.7.14
+          install_args: "actionlint shellcheck"
 
-      - name: Check Bash syntax
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          mapfile -t files < <(git ls-files 'scripts/*.sh' 'scripts/**/*.sh' 'locks/*.lock' | sort -u)
-          for file in "${files[@]}"; do
-            bash -n "$file"
-          done
-
-      - name: Run shellcheck
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          mapfile -t scripts < <(git ls-files 'scripts/*.sh' 'scripts/**/*.sh' | sort -u)
-          shellcheck --severity=warning -x "${scripts[@]}"
-
-          mapfile -t locks < <(git ls-files 'locks/*.lock' | sort)
-          shellcheck --severity=warning --shell=bash --exclude=SC2034 "${locks[@]}"
-
-      - name: Check ASU-like upgrade preparation workflow
-        shell: bash
-        run: scripts/ci/check-prepare-openwrt-upgrade.sh
-
-      - name: Check router image upgrade helper
-        shell: bash
-        run: scripts/ci/check-upgrade-router-image.sh
-
-      - name: Check prebuilt APK helper
-        shell: bash
-        run: scripts/ci/check-prebuilt-apks.sh
+      - name: Validate shell scripts and workflow
+        env:
+          MISE_AUTO_INSTALL: 0
+        run: mise run check:shell
 
   repository-metadata:
     name: Lock and patch consistency
@@ -83,13 +58,17 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
-      - name: Check lock files
-        shell: bash
-        run: scripts/ci/check-locks.sh
+      - name: Set up mise
+        uses: jdx/mise-action@v4.2.3
+        with:
+          version: 2026.7.14
+          install: false
+          cache: false
 
-      - name: Check build artifact names
-        shell: bash
-        run: scripts/ci/check-build-names.sh
+      - name: Validate repository metadata
+        env:
+          MISE_AUTO_INSTALL: 0
+        run: mise run check:metadata
 
   links:
     name: Markdown links
@@ -100,19 +79,14 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
-      - name: Check Markdown links
-        uses: lycheeverse/lychee-action@v2.8.0
+      - name: Set up mise
+        uses: jdx/mise-action@v4.2.3
         with:
-          fail: true
-          failIfEmpty: true
-          token: ${{ github.token }}
-          args: >-
-            --root-dir .
-            --verbose
-            --no-progress
-            --timeout 20
-            --max-concurrency 4
-            --exclude '^https://www\.spinics\.net/lists/kernel/msg1478599\.html$'
-            --exclude '^https://forum\.openwrt\.org/t/daemon-err-hostapd-nl80211-kernel-reports-key-addition-failed-is-this-a-problem/100370'
-            README.md
-            docs/**/*.md
+          version: 2026.7.14
+          install_args: lychee
+
+      - name: Check Markdown links
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MISE_AUTO_INSTALL: 0
+        run: mise run check:links
