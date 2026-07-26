@@ -5,7 +5,8 @@ on:
     branches:
       - main
     paths: &ci_paths
-      - .github/workflows/ci.yml
+      - .github/dependabot.yml
+      - .github/workflows/**
       - README.md
       - devices/**
       - docs/**
