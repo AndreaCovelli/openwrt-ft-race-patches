@@ -1,6 +1,12 @@
 {
   "version": 1,
   "skills": {
+    "dependabot": {
+      "source": "AndreaCovelli/my-skills",
+      "sourceType": "github",
+      "skillPath": "skills/dependabot/SKILL.md",
+      "computedHash": "809479f78d918ccd36408e69ad186817c2a52c4f1937bdd5fad0b524a60f9c76"
+    },
     "docker": {
       "source": "AndreaCovelli/my-skills",
       "sourceType": "github",
