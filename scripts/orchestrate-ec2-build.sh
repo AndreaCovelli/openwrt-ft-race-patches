@@ -704,6 +704,16 @@ set +e
       exit 1
       ;;
   esac
+  builder_id="\$("\${docker_cmd[@]}" image inspect --format '{{.Id}}' "\$image_tag")"
+  if [[ -z "\$builder_id" ]]; then
+    printf 'error: failed to inspect builder image ID: %s\n' "\$image_tag" >&2
+    exit 1
+  fi
+  docker_env+=(
+    -e BUILDER_ID="\$builder_id"
+    -e WORKSPACE_ID="\$build_id"
+    -e FRESH=1
+  )
   printf '[%s] starting container build for %s\n' "\$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "\$lock_file"
   "\${docker_cmd[@]}" run --rm \\
     "\${docker_platform_args[@]}" \\

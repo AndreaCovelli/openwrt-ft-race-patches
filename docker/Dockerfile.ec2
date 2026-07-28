@@ -58,6 +58,7 @@ RUN find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -print0 | \
       tar \
       time \
       unzip \
+      util-linux \
       wget \
       xsltproc \
       xz-utils \
