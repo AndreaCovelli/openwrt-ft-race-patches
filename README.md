@@ -10,7 +10,7 @@ This repo also contains a generic reproducible OpenWrt builder plus example
 device inputs.
 
 Build entrypoints:
-- generic: `./scripts/build-image.sh locks/<device>.lock`
+- generic: `./scripts/build-image.sh --builder-id <builder-id> locks/<device>.lock`
 - example wrapper: `./scripts/build-wr3000.sh`
 - example wrapper: `./scripts/build-wr3000e.sh`
 - example wrapper: `./scripts/build-wr3000p.sh`
@@ -37,6 +37,11 @@ Build verification:
 - Default build/session artifact bundle names follow:
   `openwrt-ft-<device-id>-<openwrt-version>-<variant>-<utc-build-id>`.
   The actual OpenWrt firmware image filenames are left unchanged.
+- Local Docker builds reuse `build/openwrt-ft-<device-id>-dev` by default,
+  while every local session still gets its own timestamped
+  `openwrt-artifacts/<session>/` bundle. Direct builds use the same stable
+  workspace default. Use `--workspace <name>` for an independent tree for the
+  same device.
 - Build artifacts include `logs/build.log` with the builder stdout/stderr.
   If OpenWrt writes package build logs, those are saved under `logs/openwrt/`.
 - Lock files can list `MANIFEST_BUILTIN_PACKAGE_NAMES` for packages that are
@@ -55,7 +60,8 @@ Build verification:
   downloads those assets locally and copies them into the remote download cache
   so GitHub repository credentials are not sent to the remote host.
 - To allow intentional package drift while still writing drift reports, run with
-  `STRICT_MANIFEST=0 ./scripts/build-image.sh locks/<device>.lock` or pass
+  `STRICT_MANIFEST=0 ./scripts/build-image.sh --builder-id <builder-id> locks/<device>.lock`
+  or pass
   `--no-strict-manifest` to the local Docker builder or EC2 orchestrator.
   Missing `apk world` package names are always fatal, even when strict
   manifest checking is disabled.
@@ -151,23 +157,35 @@ To add another router:
 3. Create a `devices/<name>/` directory for those files.
 4. Copy one of the files in `locks/` and update `CONFIG_FRAGMENT`, `WORLD_SOURCE`, `REFERENCE_MANIFEST`, and `DEVICE_ID`.
 5. Set `ARTIFACT_VARIANT` to a short intent label such as `patched`.
-6. Run `./scripts/build-image.sh locks/your-device.lock`.
+6. Run `./scripts/run-local-docker-build.sh locks/your-device.lock`.
 
 Local Docker builds:
 - `scripts/run-local-docker-build.sh` runs the same pinned builder image used by
   the EC2 wrapper, mounts this repo at `/workspace`, and writes artifacts to
   `openwrt-artifacts/<build>/`.
-- After a successful local build, the wrapper verifies the copied artifact
-  checksums and removes the generated `build/<session>/` workspace. Failed
-  builds remain available for diagnosis. Pass `--keep-build-dir` to retain a
-  successful workspace intentionally.
+- The first build seeds `build/openwrt-ft-<device-id>-dev`; later compatible
+  builds reuse its OpenWrt checkout and compiled tree. The workspace is locked
+  against concurrent builds and is retained after success or failure.
+- `--fresh` safely replaces only the selected workspace and performs a full
+  build. Use `--workspace <name>` when one device needs multiple independent
+  build trees.
+- Patch checksum changes automatically clean and compile the affected
+  `mac80211` or `hostapd` package before the normal incremental image build.
+  Use repeatable `--rebuild-package mac80211`, `--rebuild-package hostapd`, or
+  `--rebuild-package all` to force those steps without changing a patch.
+- Reuse is refused when pinned repositories, feeds, target/config baselines,
+  patch topology, local feeds, prebuilt APKs, ccache mode, platform, or builder
+  image identity differs. The diagnostic lists the changed keys; rerun with
+  `--fresh` only after confirming the replacement is intended. Workspaces
+  created by older versions of the builder also require one fresh build.
 - The wrapper mounts the repo-local `cache/` directory at `/cache`. OpenWrt
   source downloads use `/cache/dl`, so repeated local builds reuse the same
   download cache instead of writing downloads under the per-build tree.
-- Pass `--ccache` to enable OpenWrt ccache for local Docker builds. This uses
+- OpenWrt ccache is enabled by default for local Docker builds. It uses
   `cache/ccache` on the host, `/cache/ccache` in the container, and a default
-  `CCACHE_MAXSIZE` of `20G`; use `--ccache-maxsize <size>` to override it.
-  Ccache remains disabled unless explicitly enabled.
+  `CCACHE_MAXSIZE` of `20G`. Use `--ccache-maxsize <size>` to override the
+  limit or `--no-ccache` for a cache-free workspace (an existing workspace
+  with the other ccache mode must be replaced with `--fresh`).
 - Use `--no-pull --builder-image <local-tag>` when testing a locally rebuilt
   builder image that has not been pushed to a registry.
 - When a lock uses private `PREBUILT_APKS`, the wrapper downloads and verifies
@@ -177,9 +195,16 @@ Local Docker builds:
 - Pass `--cache-dir <dir>` to use a different host cache directory, and
   `--rebuild-builder-image` only when intentionally rebuilding
   `docker/Dockerfile.ec2` locally.
+- Direct `scripts/build-image.sh` calls expose the same `--workspace`,
+  `--fresh`, and repeatable `--rebuild-package` options. They also require
+  `--builder-id <id>` (or `BUILDER_ID`) so a workspace cannot be reused across
+  an unrecorded builder-environment change. The Docker wrapper inspects the
+  selected image and supplies its immutable image ID automatically.
 
 EC2 orchestration:
 - `scripts/orchestrate-ec2-build.sh` uploads a fresh snapshot of this repo to the EC2 host, prepares a per-run remote workspace, builds `docker/Dockerfile.ec2`, and starts the image build in a detached `tmux` session.
+- EC2 workspaces remain session-scoped and disposable: every remote run is a
+  full build and does not reuse a prior OpenWrt compiled tree.
 - `scripts/run-ec2-build.sh` provisions a temporary EC2 builder, creates a
   temporary SSH-only security group restricted to the current client public IP,
   runs the orchestrator through a temporary SSH config file, fetches artifacts,

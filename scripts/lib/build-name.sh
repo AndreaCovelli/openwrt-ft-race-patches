@@ -61,6 +61,44 @@ openwrt_default_build_name() {
     "$timestamp"
 }
 
+openwrt_default_workspace_name() {
+  local device_id="${DEVICE_ID:-}"
+
+  openwrt_build_name_require_component DEVICE_ID "$device_id" || return 1
+  printf 'openwrt-ft-%s-dev\n' "$device_id"
+}
+
+openwrt_default_workspace_name_from_lock() {
+  local lock_file="$1"
+  local line value
+
+  (
+    unset DEVICE_ID
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      if [[ "$line" =~ ^[[:space:]]+DEVICE_ID= ]]; then
+        openwrt_build_name_die "unsupported indented lock assignment for workspace field: $line" ||
+          exit 1
+      fi
+
+      case "$line" in
+        DEVICE_ID=\'*\')
+          value="${line#*=}"
+          value="${value#\'}"
+          value="${value%\'}"
+          DEVICE_ID="$value"
+          ;;
+        DEVICE_ID=*)
+          openwrt_build_name_die "unsupported lock assignment for workspace field: $line" ||
+            exit 1
+          ;;
+      esac
+    done <"$lock_file"
+
+    openwrt_default_workspace_name
+  )
+}
+
 openwrt_default_build_name_from_lock() {
   local lock_file="$1"
   local timestamp="${2:-}"
