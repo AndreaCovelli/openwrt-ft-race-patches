@@ -44,6 +44,9 @@ Options:
   --ccache-maxsize SIZE     Max ccache size when enabled. Default: 20G.
   --cache-dir DIR           Host cache directory mounted at /cache. Default:
                             ./cache.
+  --keep-build-dir          Keep build/<session> after a successful build.
+                            By default it is removed after artifact checksums
+                            are verified. Failed builds are always kept.
   --help                    Show this message.
 EOF
 }
@@ -100,6 +103,8 @@ STRICT_MANIFEST='1'
 HOST_CACHE_DIR='cache'
 USE_CCACHE='0'
 CCACHE_MAXSIZE='20G'
+KEEP_BUILD_DIR='0'
+OPENWRT_DOCKER_BIN="${OPENWRT_DOCKER_BIN:-docker}"
 
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
@@ -183,6 +188,10 @@ while [[ $# -gt 0 ]]; do
       HOST_CACHE_DIR="$2"
       shift 2
       ;;
+    --keep-build-dir)
+      KEEP_BUILD_DIR='1'
+      shift
+      ;;
     --help|-h)
       usage
       exit 0
@@ -224,6 +233,9 @@ case "$SESSION_NAME" in
   *[!A-Za-z0-9._-]*)
     die "session name contains unsupported characters: $SESSION_NAME"
     ;;
+  .|..)
+    die "unsupported session name: $SESSION_NAME"
+    ;;
 esac
 
 case "$STRICT_MANIFEST" in
@@ -234,9 +246,14 @@ case "$USE_CCACHE" in
   0|1) ;;
   *) die "ccache value must be 0 or 1" ;;
 esac
+case "$KEEP_BUILD_DIR" in
+  0|1) ;;
+  *) die "keep build directory value must be 0 or 1" ;;
+esac
 
 [[ -n "$BUILDER_PLATFORM" ]] || die "--platform must not be empty"
 [[ -n "$BUILDER_IMAGE" ]] || die "--builder-image must not be empty"
+[[ -n "$OPENWRT_DOCKER_BIN" ]] || die "OPENWRT_DOCKER_BIN must not be empty"
 case "$REBUILD_BUILDER_IMAGE" in
   0|1) ;;
   *) die "rebuild builder image value must be 0 or 1" ;;
@@ -250,12 +267,28 @@ fi
 if [[ "$HOST_CACHE_DIR" != /* ]]; then
   HOST_CACHE_DIR="$REPO_ROOT/$HOST_CACHE_DIR"
 fi
+BUILD_DIR="$REPO_ROOT/build/$SESSION_NAME"
 
-require_cmd cp date docker mkdir rm
+require_cmd cp date "$OPENWRT_DOCKER_BIN" mkdir realpath rm sha256sum
 
-docker_build_cmd=(docker build)
-if docker buildx version >/dev/null 2>&1; then
-  docker_build_cmd=(docker buildx build --load)
+ARTIFACT_DIR="$(realpath -m -- "$ARTIFACT_DIR")"
+HOST_CACHE_DIR="$(realpath -m -- "$HOST_CACHE_DIR")"
+BUILD_DIR="$(realpath -m -- "$BUILD_DIR")"
+
+case "$ARTIFACT_DIR" in
+  "$BUILD_DIR"|"$BUILD_DIR"/*)
+    die "artifact directory must be outside the build workspace: $ARTIFACT_DIR"
+    ;;
+esac
+case "$HOST_CACHE_DIR" in
+  "$BUILD_DIR"|"$BUILD_DIR"/*)
+    die "cache directory must be outside the build workspace: $HOST_CACHE_DIR"
+    ;;
+esac
+
+docker_build_cmd=("$OPENWRT_DOCKER_BIN" build)
+if "$OPENWRT_DOCKER_BIN" buildx version >/dev/null 2>&1; then
+  docker_build_cmd=("$OPENWRT_DOCKER_BIN" buildx build --load)
 fi
 
 docker_platform_args=()
@@ -276,10 +309,10 @@ case "$REBUILD_BUILDER_IMAGE" in
     IMAGE_TAG="$BUILDER_IMAGE"
     if [[ "$PULL_BUILDER_IMAGE" == '1' ]]; then
       log "Pulling Docker builder image: $IMAGE_TAG"
-      docker pull "$IMAGE_TAG"
+      "$OPENWRT_DOCKER_BIN" pull "$IMAGE_TAG"
     else
       log "Using local Docker builder image without pull: $IMAGE_TAG"
-      docker image inspect "$IMAGE_TAG" >/dev/null
+      "$OPENWRT_DOCKER_BIN" image inspect "$IMAGE_TAG" >/dev/null
     fi
     ;;
   1)
@@ -320,7 +353,7 @@ if ((${#LOCK_PREBUILT_APKS[@]} > 0)); then
     prebuilt_apk_download_all "$HOST_CACHE_DIR/dl" "${LOCK_PREBUILT_APKS[@]}"
   )
 fi
-docker run --rm \
+"$OPENWRT_DOCKER_BIN" run --rm \
   "${docker_platform_args[@]}" \
   "${docker_env[@]}" \
   -v "$REPO_ROOT:/workspace" \
@@ -332,6 +365,20 @@ docker run --rm \
 log "Copying build output to $ARTIFACT_DIR"
 rm -rf "$ARTIFACT_DIR"
 mkdir -p "$ARTIFACT_DIR"
-cp -a "$REPO_ROOT/build/$SESSION_NAME/output/." "$ARTIFACT_DIR/"
+cp -a "$BUILD_DIR/output/." "$ARTIFACT_DIR/"
 
+[[ -f "$ARTIFACT_DIR/sha256sums.txt" ]] ||
+  die "artifact checksum file not found: $ARTIFACT_DIR/sha256sums.txt"
+log "Verifying copied artifact checksums"
+(
+  cd "$ARTIFACT_DIR"
+  sha256sum -c sha256sums.txt
+)
 log "Artifact directory: $ARTIFACT_DIR"
+
+if [[ "$KEEP_BUILD_DIR" == '1' ]]; then
+  log "Build workspace retained: $BUILD_DIR"
+else
+  log "Removing successful build workspace: $BUILD_DIR"
+  rm -rf -- "$BUILD_DIR"
+fi
