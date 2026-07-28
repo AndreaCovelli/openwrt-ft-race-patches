@@ -62,6 +62,7 @@ DEFAULT_CACHE_ROOT='cache'
 DEFAULT_DOWNLOAD_JOBS='8'
 
 EXTRA_CONFIG_LINES=(
+  'CONFIG_FEED_usteer_patched=m'
   'CONFIG_PACKAGE_kmod-crypto-acompress=y'
   'CONFIG_PACKAGE_kmod-lib-lzo=y'
 )

@@ -42,6 +42,11 @@ Build verification:
 - Lock files can list `MANIFEST_BUILTIN_PACKAGE_NAMES` for packages that are
   intentionally built into the kernel on a target and therefore do not appear
   as installed packages in the generated manifest.
+- Local `src-link` feeds are build inputs, not public runtime repositories.
+  Every `LOCAL_FEEDS` entry must have a matching
+  `CONFIG_FEED_<name>=m` line in `EXTRA_CONFIG_LINES`; OpenWrt then keeps the
+  generated runtime URL commented out while still building selected packages
+  from that feed into the image.
 - Lock files can list `PREBUILT_APKS` for pinned binary APK inputs. The builder
   downloads those APKs into `DL_DIR`, verifies their SHA-256 checksums, and
   writes `metadata/prebuilt-apks.tsv` into the artifact bundle. Private GitHub

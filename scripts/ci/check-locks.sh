@@ -111,7 +111,7 @@ validate_extra_patches() {
 
 validate_local_feeds() {
   local lock="$1"
-  local entry name path digest package actual
+  local entry name path digest package actual expected_config config_line found
   local -A feed_names=()
   local -A feed_digests=()
 
@@ -151,6 +151,19 @@ validate_local_feeds() {
       actual="$(local_feed_digest "$path")"
       [[ "$actual" == "${feed_digests[$name]}" ]] ||
         die "$lock: local feed checksum mismatch for $name: expected ${feed_digests[$name]} got $actual"
+      declare -p EXTRA_CONFIG_LINES >/dev/null 2>&1 ||
+        die "$lock: LOCAL_FEEDS requires EXTRA_CONFIG_LINES"
+      expected_config="CONFIG_FEED_${name}=m"
+      found=0
+      local -n extra_config_lines=EXTRA_CONFIG_LINES
+      for config_line in "${extra_config_lines[@]}"; do
+        if [[ "$config_line" == "$expected_config" ]]; then
+          found=1
+          break
+        fi
+      done
+      ((found == 1)) ||
+        die "$lock: local feed $name must be build-only via $expected_config"
       feed_names["$name"]=1
     done
   elif declare -p LOCAL_FEED_INSTALLS >/dev/null 2>&1; then
@@ -215,6 +228,7 @@ for lock in "${locks[@]}"; do
 
     unset "${required_vars[@]}"
     unset OPENWRT_TAG LOCAL_FEEDS LOCAL_FEED_INSTALLS LOCAL_FEED_SHA256S PREBUILT_APKS
+    unset EXTRA_CONFIG_LINES
     unset EXTRA_PATCH_SOURCES EXTRA_PATCH_DESTS EXTRA_PATCH_SHA256S
 
     # shellcheck source=/dev/null
