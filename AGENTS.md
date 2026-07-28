@@ -50,6 +50,8 @@ scripts/ci/check-build-names.sh
 scripts/ci/check-prepare-openwrt-upgrade.sh
 scripts/ci/check-upgrade-router-image.sh
 scripts/ci/check-prebuilt-apks.sh
+scripts/ci/check-run-local-docker-build.sh
+scripts/ci/check-incremental-build.sh
 ```
 
 CI also runs a Markdown link check over `README.md` and `docs/**/*.md` with
@@ -59,7 +61,7 @@ Full firmware builds are expensive and may use network, Docker, SSH, AWS, or EC2
 resources:
 
 ```sh
-./scripts/build-image.sh locks/<device>.lock
+./scripts/build-image.sh --builder-id <builder-id> locks/<device>.lock
 ./scripts/orchestrate-ec2-build.sh <ssh-target> locks/<device>.lock
 ./scripts/run-ec2-build.sh locks/<device>.lock
 ```

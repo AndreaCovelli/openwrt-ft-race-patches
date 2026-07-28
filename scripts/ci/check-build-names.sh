@@ -39,6 +39,15 @@ assert_name \
   'openwrt-ft-cudy_wr3000p-v1-25.12.2-patched-20260519T143000Z' \
   "$tagged_name"
 
+workspace_name="$(
+  DEVICE_ID='cudy_wr3000p-v1'
+  openwrt_default_workspace_name
+)"
+assert_name \
+  'default workspace name' \
+  'openwrt-ft-cudy_wr3000p-v1-dev' \
+  "$workspace_name"
+
 untagged_name="$(
   OPENWRT_TAG=''
   OPENWRT_REF='8de418547f61d48315d115ed035b61464b3f1140'
@@ -88,11 +97,16 @@ ARTIFACT_DIR='caller-artifacts'
 KEEP_INSTANCE='0'
 REMOTE_ROOT='caller-root'
 lock_name="$(openwrt_default_build_name_from_lock "$tmp_lock" '20260519T143000Z')"
+lock_workspace_name="$(openwrt_default_workspace_name_from_lock "$tmp_lock")"
 
 assert_name \
   'lock build name isolation' \
   'openwrt-ft-cudy_wr3000p-v1-25.12.2-patched-20260519T143000Z' \
   "$lock_name"
+assert_name \
+  'lock workspace name isolation' \
+  'openwrt-ft-cudy_wr3000p-v1-dev' \
+  "$lock_workspace_name"
 assert_name 'caller SESSION_NAME preserved' 'caller-session' "$SESSION_NAME"
 assert_name 'caller ARTIFACT_DIR preserved' 'caller-artifacts' "$ARTIFACT_DIR"
 assert_name 'caller KEEP_INSTANCE preserved' '0' "$KEEP_INSTANCE"

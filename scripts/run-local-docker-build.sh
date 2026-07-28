@@ -21,8 +21,13 @@ Usage:
 Options:
   --session NAME            Build/session name. Default:
                             openwrt-ft-<device-id>-<openwrt-version>-<variant>-<utc>.
+  --workspace NAME          Reusable build workspace. Default:
+                            build/openwrt-ft-<device-id>-dev.
   --artifact-dir DIR        Local artifact output. Default:
                             ./openwrt-artifacts/<session>.
+  --fresh                   Replace the exact workspace and run a full build.
+  --rebuild-package NAME    Force an incremental package rebuild. Repeatable;
+                            NAME is mac80211, hostapd, or all.
   --builder-image REF       Prebuilt Docker builder image. Default matches
                             scripts/orchestrate-ec2-build.sh.
   --no-pull                 Use --builder-image as a local image without
@@ -39,14 +44,11 @@ Options:
   --download-jobs N         Export DOWNLOAD_JOBS into the container build.
   --strict-manifest         Fail if built package manifest drifts. Default.
   --no-strict-manifest      Report package drift without failing the build.
-  --ccache                  Enable OpenWrt ccache using /cache/ccache.
-  --no-ccache               Disable OpenWrt ccache. Default.
+  --ccache                  Enable OpenWrt ccache using /cache/ccache. Default.
+  --no-ccache               Disable OpenWrt ccache.
   --ccache-maxsize SIZE     Max ccache size when enabled. Default: 20G.
   --cache-dir DIR           Host cache directory mounted at /cache. Default:
                             ./cache.
-  --keep-build-dir          Keep build/<session> after a successful build.
-                            By default it is removed after artifact checksums
-                            are verified. Failed builds are always kept.
   --help                    Show this message.
 EOF
 }
@@ -89,6 +91,7 @@ abs_repo_path() {
 }
 
 SESSION_NAME=''
+WORKSPACE_NAME=''
 ARTIFACT_DIR=''
 BUILDER_IMAGE='ghcr.io/andreacovelli/openwrt-ft-race-patches/openwrt-builder:ubuntu-noble-20260410-snapshot-20260410t000000z@sha256:dd52704e37949d9e815ddc762c422258e13d6783371b7eabcde759b02e85650f'
 REBUILD_BUILDER_IMAGE='0'
@@ -101,9 +104,10 @@ MAKE_JOBS=''
 DOWNLOAD_JOBS=''
 STRICT_MANIFEST='1'
 HOST_CACHE_DIR='cache'
-USE_CCACHE='0'
+USE_CCACHE='1'
 CCACHE_MAXSIZE='20G'
-KEEP_BUILD_DIR='0'
+FRESH='0'
+REBUILD_PACKAGES=()
 OPENWRT_DOCKER_BIN="${OPENWRT_DOCKER_BIN:-docker}"
 
 POSITIONAL=()
@@ -114,9 +118,27 @@ while [[ $# -gt 0 ]]; do
       SESSION_NAME="$2"
       shift 2
       ;;
+    --workspace)
+      [[ $# -ge 2 ]] || die "--workspace requires a value"
+      WORKSPACE_NAME="$2"
+      shift 2
+      ;;
     --artifact-dir)
       [[ $# -ge 2 ]] || die "--artifact-dir requires a value"
       ARTIFACT_DIR="$2"
+      shift 2
+      ;;
+    --fresh)
+      FRESH='1'
+      shift
+      ;;
+    --rebuild-package)
+      [[ $# -ge 2 ]] || die "--rebuild-package requires a value"
+      case "$2" in
+        mac80211|hostapd|all) ;;
+        *) die "--rebuild-package must be mac80211, hostapd, or all" ;;
+      esac
+      REBUILD_PACKAGES+=("$2")
       shift 2
       ;;
     --builder-image)
@@ -189,8 +211,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --keep-build-dir)
-      KEEP_BUILD_DIR='1'
-      shift
+      die '--keep-build-dir was removed; reusable workspaces are retained by default'
       ;;
     --help|-h)
       usage
@@ -229,6 +250,9 @@ LOCK_FILE_REL="${LOCK_FILE#"$REPO_ROOT"/}"
 if [[ -z "$SESSION_NAME" ]]; then
   SESSION_NAME="$(openwrt_default_build_name_from_lock "$LOCK_FILE")"
 fi
+if [[ -z "$WORKSPACE_NAME" ]]; then
+  WORKSPACE_NAME="$(openwrt_default_workspace_name_from_lock "$LOCK_FILE")"
+fi
 case "$SESSION_NAME" in
   *[!A-Za-z0-9._-]*)
     die "session name contains unsupported characters: $SESSION_NAME"
@@ -237,6 +261,12 @@ case "$SESSION_NAME" in
     die "unsupported session name: $SESSION_NAME"
     ;;
 esac
+case "$WORKSPACE_NAME" in
+  *[!A-Za-z0-9._-]*|.|..)
+    die "workspace name contains unsupported characters: $WORKSPACE_NAME"
+    ;;
+esac
+[[ -n "$WORKSPACE_NAME" ]] || die 'workspace name must not be empty'
 
 case "$STRICT_MANIFEST" in
   0|1) ;;
@@ -246,9 +276,9 @@ case "$USE_CCACHE" in
   0|1) ;;
   *) die "ccache value must be 0 or 1" ;;
 esac
-case "$KEEP_BUILD_DIR" in
+case "$FRESH" in
   0|1) ;;
-  *) die "keep build directory value must be 0 or 1" ;;
+  *) die "fresh value must be 0 or 1" ;;
 esac
 
 [[ -n "$BUILDER_PLATFORM" ]] || die "--platform must not be empty"
@@ -267,24 +297,37 @@ fi
 if [[ "$HOST_CACHE_DIR" != /* ]]; then
   HOST_CACHE_DIR="$REPO_ROOT/$HOST_CACHE_DIR"
 fi
-BUILD_DIR="$REPO_ROOT/build/$SESSION_NAME"
+WORKSPACE_DIR="$REPO_ROOT/build/$WORKSPACE_NAME"
 
-require_cmd cp date "$OPENWRT_DOCKER_BIN" mkdir realpath rm sha256sum
+require_cmd cp date flock "$OPENWRT_DOCKER_BIN" mkdir realpath rm sha256sum
 
+[[ ! -L "$WORKSPACE_DIR" ]] ||
+  die "workspace must not be a symbolic link: $WORKSPACE_DIR"
 ARTIFACT_DIR="$(realpath -m -- "$ARTIFACT_DIR")"
 HOST_CACHE_DIR="$(realpath -m -- "$HOST_CACHE_DIR")"
-BUILD_DIR="$(realpath -m -- "$BUILD_DIR")"
+WORKSPACE_DIR="$(realpath -m -- "$WORKSPACE_DIR")"
 
 case "$ARTIFACT_DIR" in
-  "$BUILD_DIR"|"$BUILD_DIR"/*)
+  "$WORKSPACE_DIR"|"$WORKSPACE_DIR"/*)
     die "artifact directory must be outside the build workspace: $ARTIFACT_DIR"
     ;;
 esac
 case "$HOST_CACHE_DIR" in
-  "$BUILD_DIR"|"$BUILD_DIR"/*)
+  "$WORKSPACE_DIR"|"$WORKSPACE_DIR"/*)
     die "cache directory must be outside the build workspace: $HOST_CACHE_DIR"
     ;;
 esac
+
+WORKSPACE_LOCK_DIR="$REPO_ROOT/build/.openwrt-ft-locks"
+[[ ! -L "$WORKSPACE_LOCK_DIR" ]] ||
+  die "workspace lock directory must not be a symbolic link: $WORKSPACE_LOCK_DIR"
+mkdir -p "$WORKSPACE_LOCK_DIR"
+WORKSPACE_LOCK_FILE="$WORKSPACE_LOCK_DIR/$WORKSPACE_NAME.lock"
+[[ ! -L "$WORKSPACE_LOCK_FILE" ]] ||
+  die "workspace lock file must not be a symbolic link: $WORKSPACE_LOCK_FILE"
+exec {WORKSPACE_LOCK_FD}>>"$WORKSPACE_LOCK_FILE"
+flock -n "$WORKSPACE_LOCK_FD" ||
+  die "workspace is already locked by another build: $WORKSPACE_NAME"
 
 docker_build_cmd=("$OPENWRT_DOCKER_BIN" build)
 if "$OPENWRT_DOCKER_BIN" buildx version >/dev/null 2>&1; then
@@ -329,7 +372,26 @@ case "$REBUILD_BUILDER_IMAGE" in
     ;;
 esac
 
-docker_env=(-e CACHE_ROOT=/cache -e BUILD_ID="$SESSION_NAME" -e BUILDER_PLATFORM="$BUILDER_PLATFORM" -e STRICT_MANIFEST="$STRICT_MANIFEST" -e USE_CCACHE="$USE_CCACHE")
+BUILDER_ID="$("$OPENWRT_DOCKER_BIN" image inspect --format '{{.Id}}' "$IMAGE_TAG")"
+[[ -n "$BUILDER_ID" ]] || die "failed to inspect builder image ID: $IMAGE_TAG"
+
+if ((${#REBUILD_PACKAGES[@]} == 0)); then
+  rebuild_packages_value=''
+else
+  rebuild_packages_value="$(IFS=,; printf '%s' "${REBUILD_PACKAGES[*]}")"
+fi
+docker_env=(
+  -e CACHE_ROOT=/cache
+  -e BUILD_ID="$SESSION_NAME"
+  -e WORKSPACE_ID="$WORKSPACE_NAME"
+  -e BUILDER_ID="$BUILDER_ID"
+  -e BUILDER_PLATFORM="$BUILDER_PLATFORM"
+  -e STRICT_MANIFEST="$STRICT_MANIFEST"
+  -e USE_CCACHE="$USE_CCACHE"
+  -e FRESH="$FRESH"
+  -e REBUILD_PACKAGES="$rebuild_packages_value"
+  -e OPENWRT_WORKSPACE_LOCK_HELD=1
+)
 if [[ -n "$MAKE_JOBS" ]]; then
   docker_env+=(-e MAKE_JOBS="$MAKE_JOBS")
 fi
@@ -341,6 +403,7 @@ if [[ "$USE_CCACHE" == '1' ]]; then
 fi
 
 log "Starting local container build for $LOCK_FILE_REL"
+log "Workspace: build/$WORKSPACE_NAME"
 mkdir -p "$HOST_CACHE_DIR"
 if [[ "$USE_CCACHE" == '1' ]]; then
   mkdir -p "$HOST_CACHE_DIR/ccache"
@@ -365,7 +428,7 @@ fi
 log "Copying build output to $ARTIFACT_DIR"
 rm -rf "$ARTIFACT_DIR"
 mkdir -p "$ARTIFACT_DIR"
-cp -a "$BUILD_DIR/output/." "$ARTIFACT_DIR/"
+cp -a "$WORKSPACE_DIR/output/." "$ARTIFACT_DIR/"
 
 [[ -f "$ARTIFACT_DIR/sha256sums.txt" ]] ||
   die "artifact checksum file not found: $ARTIFACT_DIR/sha256sums.txt"
@@ -375,10 +438,4 @@ log "Verifying copied artifact checksums"
   sha256sum -c sha256sums.txt
 )
 log "Artifact directory: $ARTIFACT_DIR"
-
-if [[ "$KEEP_BUILD_DIR" == '1' ]]; then
-  log "Build workspace retained: $BUILD_DIR"
-else
-  log "Removing successful build workspace: $BUILD_DIR"
-  rm -rf -- "$BUILD_DIR"
-fi
+log "Build workspace retained: $WORKSPACE_DIR"
