@@ -157,6 +157,10 @@ Local Docker builds:
 - `scripts/run-local-docker-build.sh` runs the same pinned builder image used by
   the EC2 wrapper, mounts this repo at `/workspace`, and writes artifacts to
   `openwrt-artifacts/<build>/`.
+- After a successful local build, the wrapper verifies the copied artifact
+  checksums and removes the generated `build/<session>/` workspace. Failed
+  builds remain available for diagnosis. Pass `--keep-build-dir` to retain a
+  successful workspace intentionally.
 - The wrapper mounts the repo-local `cache/` directory at `/cache`. OpenWrt
   source downloads use `/cache/dl`, so repeated local builds reuse the same
   download cache instead of writing downloads under the per-build tree.

@@ -26,6 +26,7 @@ shellcheck --severity=warning --shell=bash --exclude=SC2034 "${locks[@]}"
 scripts/ci/check-prepare-openwrt-upgrade.sh
 scripts/ci/check-upgrade-router-image.sh
 scripts/ci/check-prebuilt-apks.sh
+scripts/ci/check-run-local-docker-build.sh
 actionlint .github/workflows/ci.yml
 '''
 
