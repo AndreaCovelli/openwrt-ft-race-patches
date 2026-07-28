@@ -268,6 +268,26 @@ verify_not_shallow() {
   [[ "$is_shallow" == 'false' ]] || die "repository is shallow: $repo"
 }
 
+verify_tracked_files_clean() {
+  local repo path allowed_path is_allowed
+  local -a allowed_paths=("${@:2}")
+  local -a changed_paths=()
+  repo="$1"
+
+  mapfile -d '' -t changed_paths < <(git -C "$repo" diff --name-only -z HEAD --)
+  for path in "${changed_paths[@]}"; do
+    is_allowed=0
+    for allowed_path in "${allowed_paths[@]}"; do
+      if [[ "$path" == "$allowed_path" ]]; then
+        is_allowed=1
+        break
+      fi
+    done
+    ((is_allowed)) ||
+      die "tracked files are modified in workspace checkout: $repo/$path; rerun with --fresh"
+  done
+}
+
 download_prebuilt_apks() {
   local entry name file url sha256
 
@@ -842,6 +862,7 @@ if [[ "$BUILD_MODE" == 'incremental' ]]; then
     die "workspace checkout is incomplete: $BUILD_ROOT; rerun with --fresh"
   verify_checkout "$OPENWRT_DIR" "$OPENWRT_REF"
   verify_not_shallow "$OPENWRT_DIR"
+  verify_tracked_files_clean "$OPENWRT_DIR" "${PINNED_PATCH_DESTS[@]}"
   verify_checkout "$OPENWRT_DIR/feeds/packages" "$FEED_PACKAGES_REF"
   verify_checkout "$OPENWRT_DIR/feeds/luci" "$FEED_LUCI_REF"
   verify_checkout "$OPENWRT_DIR/feeds/routing" "$FEED_ROUTING_REF"
@@ -852,6 +873,11 @@ if [[ "$BUILD_MODE" == 'incremental' ]]; then
   verify_not_shallow "$OPENWRT_DIR/feeds/routing"
   verify_not_shallow "$OPENWRT_DIR/feeds/telephony"
   verify_not_shallow "$OPENWRT_DIR/feeds/video"
+  verify_tracked_files_clean "$OPENWRT_DIR/feeds/packages"
+  verify_tracked_files_clean "$OPENWRT_DIR/feeds/luci"
+  verify_tracked_files_clean "$OPENWRT_DIR/feeds/routing"
+  verify_tracked_files_clean "$OPENWRT_DIR/feeds/telephony"
+  verify_tracked_files_clean "$OPENWRT_DIR/feeds/video"
 
   if [[ -n "${OPENWRT_TAG:-}" ]]; then
     tag_ref="$(git -C "$OPENWRT_DIR" rev-list -n1 "$OPENWRT_TAG")"

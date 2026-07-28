@@ -203,6 +203,27 @@ fi
 [[ ! -e "$workspace/openwrt/bin/targets/test/sub/old-fake-device-stale.bin" ]] ||
   die 'incremental build retained a stale matching target artifact'
 
+summary_sha="$(sha256sum "$workspace/output/build-summary.txt" | awk '{print $1}')"
+printf '# modified during diagnosis\n' >>"$workspace/openwrt/Makefile"
+if run_build tracked-core-change >"$tmp_root/tracked-core.log" 2>&1; then
+  die 'tracked core source modification was accepted for reuse'
+fi
+grep -Fq 'tracked files are modified' "$tmp_root/tracked-core.log" ||
+  die 'tracked core source refusal did not identify the modified files'
+[[ "$(sha256sum "$workspace/output/build-summary.txt" | awk '{print $1}')" == "$summary_sha" ]] ||
+  die 'tracked core source refusal modified the existing workspace output'
+git -C "$workspace/openwrt" checkout -- Makefile
+
+printf '# modified during diagnosis\n' >>"$workspace/openwrt/feeds/packages/README"
+if run_build tracked-feed-change >"$tmp_root/tracked-feed.log" 2>&1; then
+  die 'tracked feed modification was accepted for reuse'
+fi
+grep -Fq 'tracked files are modified' "$tmp_root/tracked-feed.log" ||
+  die 'tracked feed refusal did not identify the modified files'
+[[ "$(sha256sum "$workspace/output/build-summary.txt" | awk '{print $1}')" == "$summary_sha" ]] ||
+  die 'tracked feed refusal modified the existing workspace output'
+git -C "$workspace/openwrt/feeds/packages" checkout -- README
+
 printf 'mac80211 patch v2\n' >"$input_root/mac80211.patch"
 write_lock
 : >"$workspace/openwrt/make-calls.log"
