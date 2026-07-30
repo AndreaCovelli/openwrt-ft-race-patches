@@ -126,9 +126,12 @@ sha256sum "$PATCH"
   SHA-256 into the matching `EXTRA_PATCH_SHA256S` entry in each affected lock.
 
 What it fixes:
-- `mac80211` no longer rejects the AP-side pairwise key install that happens during the FT pre-`ASSOC` timing window just because `WLAN_STA_ASSOC` is not set yet.
-- The first hardware `set_key()` attempt is skipped until the STA is associated; the later `AUTHORIZED` transition is only an extra retry point, so this is not the naive "delete the check and stay on software crypto forever" workaround.
-- The mac80211 patch accepts only AP / AP_VLAN pre-`ASSOC` pairwise keys when a STA object already exists, then relies on the deferred upload path to push them to hardware once the STA transitions into the ready state.
+- `mac80211` accepts AP / AP_VLAN pre-`ASSOC` pairwise keys when a STA
+  object already exists and marks each accepted key for deferred hardware
+  upload.
+- The deferred marker skips the initial hardware `set_key()` call. After the
+  driver completes the STA's `AUTH`-to-`ASSOC` transition, mac80211 scans the
+  STA's PTK slots and uploads the marked keys.
 - `hostapd` re-adds an unassociated kernel STA before the first FT PTK install
   when userspace still has a STA entry but the kernel entry was removed after
   disassociation. This covers the FT-over-DS/WDS error path where key install
@@ -226,7 +229,7 @@ EC2 orchestration:
   architecture does not silently change the builder environment. Override with
   `--platform linux/arm64` only when intentionally using an arm64 builder.
 - The EC2 Docker builder pulls the private prebuilt image
-  `ghcr.io/andreacovelli/openwrt-ft-race-patches/openwrt-builder:ubuntu-noble-20260410-snapshot-20260410t000000z@sha256:dd52704e37949d9e815ddc762c422258e13d6783371b7eabcde759b02e85650f`
+  `ghcr.io/andreacovelli/openwrt-ft-race-patches/openwrt-builder:ubuntu-noble-20260410-snapshot-20260410t000000z@sha256:ddd581ad95983400564b019d362b674eb24ecd096ca8cb4fc64cc6f5a86a0ea5`
   by default. Because the image is private, set `GHCR_TOKEN` locally with
   package read access so the remote host can authenticate to GHCR before
   pulling. The orchestrator uses `GHCR_USERNAME` when set, otherwise

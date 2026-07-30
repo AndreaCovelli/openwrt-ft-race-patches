@@ -81,6 +81,8 @@ WORKDIR /workspace
 
 ENV HOME=/home/builder
 
+LABEL org.opencontainers.image.source="https://github.com/AndreaCovelli/openwrt-ft-race-patches"
+
 VOLUME ["/workspace", "/cache"]
 
 CMD ["/bin/bash"]

@@ -22,7 +22,7 @@ Options:
   --session NAME            tmux session and build id. Default:
                             openwrt-ft-<device-id>-<openwrt-version>-<variant>-<utc>
   --builder-image REF       Prebuilt Docker builder image. Default:
-                            ghcr.io/andreacovelli/openwrt-ft-race-patches/openwrt-builder:ubuntu-noble-20260410-snapshot-20260410t000000z@sha256:dd52704e37949d9e815ddc762c422258e13d6783371b7eabcde759b02e85650f
+                            ghcr.io/andreacovelli/openwrt-ft-race-patches/openwrt-builder:ubuntu-noble-20260410-snapshot-20260410t000000z@sha256:ddd581ad95983400564b019d362b674eb24ecd096ca8cb4fc64cc6f5a86a0ea5
                             Private GHCR images need GHCR_TOKEN set locally so
                             the remote host can authenticate before pulling.
                             GHCR_USERNAME is optional when GITHUB_ACTOR or an
@@ -81,7 +81,7 @@ abs_repo_path() {
 # shellcheck disable=SC2088
 REMOTE_ROOT='~/openwrt-ft-builds'
 SESSION_NAME=''
-BUILDER_IMAGE='ghcr.io/andreacovelli/openwrt-ft-race-patches/openwrt-builder:ubuntu-noble-20260410-snapshot-20260410t000000z@sha256:dd52704e37949d9e815ddc762c422258e13d6783371b7eabcde759b02e85650f'
+BUILDER_IMAGE='ghcr.io/andreacovelli/openwrt-ft-race-patches/openwrt-builder:ubuntu-noble-20260410-snapshot-20260410t000000z@sha256:ddd581ad95983400564b019d362b674eb24ecd096ca8cb4fc64cc6f5a86a0ea5'
 REBUILD_BUILDER_IMAGE='0'
 IMAGE_TAG='patch-fix-openwrt-builder'
 BUILDER_PLATFORM='linux/amd64'
