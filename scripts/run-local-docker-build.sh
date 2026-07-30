@@ -93,7 +93,7 @@ abs_repo_path() {
 SESSION_NAME=''
 WORKSPACE_NAME=''
 ARTIFACT_DIR=''
-BUILDER_IMAGE='ghcr.io/andreacovelli/openwrt-ft-race-patches/openwrt-builder:ubuntu-noble-20260410-snapshot-20260410t000000z@sha256:dd52704e37949d9e815ddc762c422258e13d6783371b7eabcde759b02e85650f'
+BUILDER_IMAGE='ghcr.io/andreacovelli/openwrt-ft-race-patches/openwrt-builder:ubuntu-noble-20260410-snapshot-20260410t000000z@sha256:ddd581ad95983400564b019d362b674eb24ecd096ca8cb4fc64cc6f5a86a0ea5'
 REBUILD_BUILDER_IMAGE='0'
 PULL_BUILDER_IMAGE='1'
 IMAGE_TAG='patch-fix-openwrt-builder'
