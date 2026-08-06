@@ -126,9 +126,10 @@ sha256sum "$PATCH"
   SHA-256 into the matching `EXTRA_PATCH_SHA256S` entry in each affected lock.
 
 What it fixes:
-- `mac80211` accepts AP / AP_VLAN pre-`ASSOC` pairwise keys when a STA
-  object already exists and marks each accepted key for deferred hardware
-  upload.
+- When automatic software fallback is allowed, `mac80211` accepts AP / AP_VLAN
+  pre-`ASSOC` pairwise keys once a STA object exists and marks each accepted
+  key for deferred hardware upload. Drivers advertising `SW_CRYPTO_CONTROL`
+  retain the existing rejection.
 - The deferred marker skips the initial hardware `set_key()` call. After the
   driver completes the STA's `AUTH`-to-`ASSOC` transition, mac80211 scans the
   STA's PTK slots and uploads the marked keys.
