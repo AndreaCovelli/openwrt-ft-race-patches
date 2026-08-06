@@ -6,11 +6,9 @@ OpenWrt PR at <https://github.com/openwrt/openwrt/pull/23181>. The repository
 also carries a companion hostapd patch for the related FT-over-DS/WDS path where
 userspace must re-add an unassociated kernel STA before the first PTK install.
 
-As checked on 2026-05-19, that upstream PR is open and scoped to one mac80211
-patch file:
-`package/kernel/mac80211/patches/subsys/400-mac80211-defer-ap-side-ft-key-upload.patch`.
-The patch is currently proposed as an OpenWrt-local mac80211 fix, not as a
-backport of an already accepted linux-wireless commit.
+The OpenWrt copy remains an out-of-tree patch. An upstream version was posted
+to linux-wireless in July 2026 and is being refined following maintainer review;
+it has not been accepted into wireless-next.
 
 ## Short version
 
@@ -36,11 +34,14 @@ The patch changes the policy for one narrow case:
 - the key must be pairwise;
 - the interface must be AP or AP_VLAN;
 - a station entry must already exist;
+- the driver must allow mac80211's automatic software-crypto fallback;
 - if the station is not associated yet, the key is accepted into mac80211 but
   not uploaded to the driver yet.
 
-Once the station reaches ASSOC, mac80211 retries hardware upload. The later
-AUTHORIZED transition is kept as a second retry point.
+Once the driver's AUTH-to-ASSOC transition succeeds, mac80211 retries hardware
+upload. Drivers advertising `IEEE80211_HW_SW_CRYPTO_CONTROL` keep the original
+pre-association rejection because only their real `set_key()` return value can
+permit software crypto.
 
 ## Why the old behavior existed
 
@@ -60,8 +61,9 @@ accept keys after the station is associated. The old in-code TODO already
 described the better long-term shape: accept the key when a station entry exists
 and add it to the device after the station becomes ready.
 
-This patch implements that TODO for the AP-side pairwise FT case while keeping
-the old rejection behavior for everything else.
+This patch implements that TODO for the AP-side pairwise FT case when automatic
+software fallback is permitted. It keeps the old rejection behavior for
+`SW_CRYPTO_CONTROL` drivers and for all unrelated key paths.
 
 ## Actors and states
 
@@ -82,9 +84,7 @@ The important station milestones are:
 
 - station entry exists: mac80211 can attach a key object to a known STA;
 - ASSOC: mac80211 considers the STA associated and the driver should be ready
-  for the normal per-station key upload path;
-- AUTHORIZED: the STA is allowed to pass controlled-port traffic, and the patch
-  uses this later transition as a backup retry point.
+  for the normal per-station key upload path.
 
 ## Flowchart
 
@@ -94,33 +94,32 @@ flowchart TD
     LOOKUP{"Does mac80211 have a STA entry?"}
     ASSOC{"Is WLAN_STA_ASSOC set?"}
     APPAIR{"Is this an AP or AP_VLAN pairwise key?"}
-    OLD_REJECT["Old behavior: reject with -ENOENT"]
-    KEEP_OLD_GATE["Keep existing ASSOC gate"]
+    SWCTRL{"Does the driver control software crypto?"}
+    REJECT["Keep existing gate: reject with -ENOENT"]
     STORE["Patched behavior: accept and store key in mac80211"]
     SKIP_HW["Skip initial hardware upload while STA is not associated"]
     ASSOC_EVENT["STA transitions to ASSOC"]
     UPLOAD["Retry ieee80211_key_enable_hw_accel()"]
-    AUTH_EVENT["STA transitions to AUTHORIZED"]
-    RETRY["Retry upload again if still not uploaded"]
-    DRIVER["Driver receives set_key() when station is ready"]
+    DRIVER["Driver receives set_key() after its state transition"]
+    SOFTWARE["Keep using the normal software fallback if upload fails"]
     DONE["Roam can complete without pre-ASSOC key rejection"]
 
     REQUEST --> LOOKUP
-    LOOKUP -->|"no"| OLD_REJECT
+    LOOKUP -->|"no"| REJECT
     LOOKUP -->|"yes"| ASSOC
-    ASSOC -->|"yes"| UPLOAD
+    ASSOC -->|"yes"| DRIVER
     ASSOC -->|"no"| APPAIR
-    APPAIR -->|"no"| KEEP_OLD_GATE
-    KEEP_OLD_GATE --> OLD_REJECT
-    APPAIR -->|"yes"| STORE
+    APPAIR -->|"no"| REJECT
+    APPAIR -->|"yes"| SWCTRL
+    SWCTRL -->|"yes"| REJECT
+    SWCTRL -->|"no"| STORE
     STORE --> SKIP_HW
     SKIP_HW --> ASSOC_EVENT
     ASSOC_EVENT --> UPLOAD
     UPLOAD -->|"success"| DRIVER
-    UPLOAD -->|"too early or unsupported"| AUTH_EVENT
-    AUTH_EVENT --> RETRY
-    RETRY --> DRIVER
+    UPLOAD -->|"unsupported or failed"| SOFTWARE
     DRIVER --> DONE
+    SOFTWARE --> DONE
 ```
 
 ## Sequence diagram
@@ -141,7 +140,7 @@ sequenceDiagram
     NL->>CFG: ieee80211_add_key()
     CFG->>CFG: sta_info_get_bss() finds STA entry
 
-    alt old behavior before this patch
+    alt old behavior or a SW_CRYPTO_CONTROL driver
         CFG->>CFG: WLAN_STA_ASSOC is still clear
         CFG->>KEY: free unused key object
         CFG-->>NL: return -ENOENT
@@ -155,38 +154,26 @@ sequenceDiagram
         else retry is too late or missing
             H-->>STA: roam may fail, especially with WPA3/PMF
         end
-    else patched behavior
-        CFG->>CFG: key is pairwise and vif is AP/AP_VLAN
+    else patched automatic-fallback path
+        CFG->>CFG: AP/AP_VLAN pairwise key with software fallback
+        CFG->>KEY: mark KEY_FLAG_DEFERRED_HW_UPLOAD
         CFG->>KEY: ieee80211_key_link() prepares key for STA
         KEY->>KEY: ieee80211_key_enable_hw_accel()
-        KEY->>KEY: keep key unuploaded while ASSOC is clear
+        KEY->>KEY: skip set_key() and use normal software fallback
         KEY->>KEY: publish stored key in mac80211
         CFG-->>NL: return success after storing key
         NL-->>H: key request succeeds
         SI->>SI: station moves AUTH to ASSOC
-        SI->>KEY: ieee80211_upload_deferred_ap_sta_keys(sta)
-        KEY->>KEY: scan AP/VLAN key lists for keys bound to STA
+        SI->>KEY: ieee80211_upload_deferred_sta_keys(sta)
+        KEY->>KEY: scan sta->ptk[] for explicitly deferred keys
         KEY->>KEY: retry ieee80211_key_enable_hw_accel()
         alt driver-side station is ready
             KEY->>DRV: set_key()
             DRV-->>KEY: key uploaded to hardware
-        else ASSOC-time upload is still too early
-            KEY->>KEY: leave key stored but not uploaded
+        else hardware upload fails or is unsupported
+            KEY->>KEY: retain the normal software fallback
         end
         KEY-->>SI: ASSOC retry completes
-        SI->>SI: station moves ASSOC to AUTHORIZED
-        SI->>KEY: ieee80211_upload_deferred_ap_sta_keys(sta)
-        KEY->>KEY: scan AP/VLAN key lists for keys bound to STA
-        loop each matching key
-            alt key is already uploaded
-                KEY->>KEY: skip key
-            else key is still deferred
-                KEY->>KEY: retry ieee80211_key_enable_hw_accel()
-                KEY->>DRV: set_key()
-                DRV-->>KEY: key uploaded to hardware
-            end
-        end
-        KEY-->>SI: AUTHORIZED retry completes
     end
 ```
 
@@ -202,16 +189,16 @@ stateDiagram-v2
     RetryNeeded --> UploadAfterRetry: userspace retries after ASSOC
     RetryNeeded --> RoamFailed: retry missing or too late
 
-    PreAssoc --> DeferredInMac80211: patched AP/AP_VLAN pairwise add_key
+    PreAssoc --> OldRejected: SW_CRYPTO_CONTROL retains old gate
+    PreAssoc --> DeferredInMac80211: eligible AP/AP_VLAN pairwise add_key
     DeferredInMac80211 --> WaitingForAssoc: hardware upload skipped
     WaitingForAssoc --> AssocUploadAttempt: AUTH to ASSOC
     AssocUploadAttempt --> UploadedToHardware: driver accepts set_key()
-    AssocUploadAttempt --> WaitingForAuthorized: driver path still too early
-    WaitingForAuthorized --> AuthorizedRetry: ASSOC to AUTHORIZED
-    AuthorizedRetry --> UploadedToHardware: retry succeeds
+    AssocUploadAttempt --> SoftwareCrypto: hardware upload unavailable
 
     UploadAfterRetry --> UploadedToHardware
     UploadedToHardware --> RoamComplete
+    SoftwareCrypto --> RoamComplete
     RoamComplete --> [*]
     RoamFailed --> [*]
 ```
@@ -220,13 +207,15 @@ stateDiagram-v2
 
 ### `net/mac80211/cfg.c`
 
-`ieee80211_add_key()` now computes:
+`ieee80211_add_key()` now computes an explicit deferred-upload condition:
 
 ```c
-defer_pairwise_ap =
-	pairwise &&
+defer_hw_upload =
+	sta && pairwise &&
+	!test_sta_flag(sta, WLAN_STA_ASSOC) &&
 	(sdata->vif.type == NL80211_IFTYPE_AP ||
-	 sdata->vif.type == NL80211_IFTYPE_AP_VLAN);
+	 sdata->vif.type == NL80211_IFTYPE_AP_VLAN) &&
+	!ieee80211_hw_check(&local->hw, SW_CRYPTO_CONTROL);
 ```
 
 The rejection rule becomes:
@@ -234,7 +223,7 @@ The rejection rule becomes:
 ```c
 if (!sta ||
     (!test_sta_flag(sta, WLAN_STA_ASSOC) &&
-     !defer_pairwise_ap)) {
+     !defer_hw_upload)) {
 	ieee80211_key_free_unused(key);
 	return -ENOENT;
 }
@@ -245,24 +234,26 @@ That means:
 - no station entry still fails;
 - non-AP pre-ASSOC keys still fail;
 - non-pairwise pre-ASSOC keys still fail;
-- AP/AP_VLAN pairwise keys are allowed once a STA entry exists, even if
-  `WLAN_STA_ASSOC` is not set yet.
+- `SW_CRYPTO_CONTROL` drivers retain the old pre-ASSOC rejection;
+- other AP/AP_VLAN pairwise keys are allowed once a STA entry exists, even if
+  `WLAN_STA_ASSOC` is not set yet, and receive
+  `KEY_FLAG_DEFERRED_HW_UPLOAD`.
 
 This is the central race fix. It removes the premature `-ENOENT` only for the
-case that AP-side FT needs.
+AP-side FT case where mac80211 is allowed to keep the key in software.
 
 ### `net/mac80211/key.c`
 
-The patch adds an AP-side pairwise guard inside
-`ieee80211_key_enable_hw_accel()`:
+The add-key path records deferral on the individual key. The hardware helper
+then checks that marker before calling the driver:
 
 ```c
-pairwise_ap = sta && (key->conf.flags & IEEE80211_KEY_FLAG_PAIRWISE) &&
-	      (sdata->vif.type == NL80211_IFTYPE_AP ||
-	       sdata->vif.type == NL80211_IFTYPE_AP_VLAN);
-
-if (pairwise_ap && !test_sta_flag(sta, WLAN_STA_ASSOC)) {
-	ret = 1;
+if (key->flags & KEY_FLAG_DEFERRED_HW_UPLOAD) {
+	/*
+	 * Keys are only deferred if automatic software fallback is
+	 * allowed. Leave ret as -EOPNOTSUPP so the normal fallback path
+	 * is used without pretending the driver returned 1.
+	 */
 	goto out_unsupported;
 }
 ```
@@ -270,96 +261,57 @@ if (pairwise_ap && !test_sta_flag(sta, WLAN_STA_ASSOC)) {
 This matters because accepting the key into mac80211 is not the same as sending
 it to hardware immediately.
 
-The `ret = 1` assignment is intentional. Some drivers, including ath10k, set
-`IEEE80211_HW_SW_CRYPTO_CONTROL`, which means mac80211 must not automatically
-fall back to software crypto after hardware upload is skipped. In mac80211's
-`set_key()` contract, a return value of `1` means this specific key can stay in
-software. Setting `ret = 1` for the pre-ASSOC deferral therefore lets the key be
-accepted and validated while still avoiding premature driver upload. Without
-that value, the deferred path can still fail for `SW_CRYPTO_CONTROL` drivers.
+The helper deliberately leaves `ret` at `-EOPNOTSUPP`. For ciphers mac80211 can
+handle, that follows the existing automatic software-fallback path. It does not
+invent a driver return value of `1`, which would violate the
+`SW_CRYPTO_CONTROL` contract. The `cfg.c` condition guarantees that only
+drivers permitting automatic fallback can reach this deferred branch.
 
-The `pairwise_ap` filter intentionally mirrors the narrower exception in
-`cfg.c`. The add-key path accepts a pre-ASSOC key only for AP/AP_VLAN pairwise
-keys, so the upload path should defer hardware programming only for that same
-case. Without this matching scope, a generic pairwise-key deferral in
-`ieee80211_key_enable_hw_accel()` could silently change non-AP reupload paths
-such as station, mesh, or IBSS key reenablement, even though those paths were not
-part of the AP-side FT race.
-
-Without this second guard, the patch would risk moving the old failure from
-`cfg.c` into the driver. Some drivers are not ready to receive the pairwise key
-until the station has reached the associated state. The fix therefore splits the
-operation:
+The fix therefore splits the operation:
 
 1. accept and retain the key object early;
 2. defer driver upload until the station state is ready.
 
-The same file also adds:
+The same file adds `ieee80211_upload_deferred_sta_keys()`. The helper scans only
+the target station's PTK slots:
 
-- `ieee80211_upload_keys_for_sta()`;
-- `ieee80211_upload_deferred_ap_sta_keys()`.
+- it ignores empty slots and keys without `KEY_FLAG_DEFERRED_HW_UPLOAD`;
+- it clears the marker before retrying;
+- it calls the normal `ieee80211_key_enable_hw_accel()` path once.
 
-The helper walks the interface key list and retries hardware upload for keys
-that:
-
-- are bound to the target `sta`;
-- are not already marked `KEY_FLAG_UPLOADED_TO_HARDWARE`.
-
-The retry deliberately calls `ieee80211_key_enable_hw_accel()` again rather than
-duplicating readiness checks. That keeps the existing checks for unsupported
-hardware crypto, missing driver support, and `sta->uploaded` in one place.
+An upload that already succeeded cannot be repeated because successful keys
+were never marked deferred. If the ASSOC-time driver call still cannot offload
+the key, the normal software fallback remains in use.
 
 ### AP_VLAN handling
 
-The PR review called out that AP_VLAN key placement is subtle. A key can be
-attached through an AP_VLAN device while the station relationship may also
-involve the master AP interface.
-
-The final local patch handles that by checking both sides:
-
-- when called from a master AP, it walks the AP key list and each configured
-  VLAN key list;
-- when called from an AP_VLAN, it walks the VLAN key list and then the master
-  AP key list;
-- for other interface types, it returns without scanning key lists.
-
-That avoids relying on only `sta->sdata->key_list`, which could miss a deferred
-key object stored on the related AP or VLAN interface.
+The acceptance condition covers both AP and AP_VLAN. The retry does not scan
+interface key lists; pairwise keys attached to the station are stored in
+`sta->ptk[]`, so the explicit per-key marker follows the key regardless of
+whether it was added through the AP or its VLAN interface.
 
 ### `net/mac80211/key.h`
 
-The patch exposes:
+The patch adds the internal marker and exposes the retry helper:
 
 ```c
-void ieee80211_upload_deferred_ap_sta_keys(struct sta_info *sta);
+KEY_FLAG_DEFERRED_HW_UPLOAD = BIT(2);
+void ieee80211_upload_deferred_sta_keys(struct sta_info *sta);
 ```
 
-This lets the station-state code call the retry helper at the right lifecycle
-points while keeping non-AP station transitions out of the deferred-key scan.
+Only keys accepted through the narrow `cfg.c` exception receive the marker.
 
 ### `net/mac80211/sta_info.c`
 
-The patch adds two retry calls in `_sta_info_move_state()`:
+The patch adds one retry call in `_sta_info_move_state()` during AUTH to ASSOC:
 
 ```c
-/* Primary retry for AP key uploads deferred until ASSOC. */
-ieee80211_upload_deferred_ap_sta_keys(sta);
+ieee80211_upload_deferred_sta_keys(sta);
 ```
 
-at the AUTH to ASSOC transition, and:
-
-```c
-/* Extra retry if the ASSOC-time AP key upload was too early. */
-ieee80211_upload_deferred_ap_sta_keys(sta);
-```
-
-at the ASSOC to AUTHORIZED transition.
-
-The first call is the intended primary upload point. The second call is
-idempotent for keys already uploaded because the helper skips
-`KEY_FLAG_UPLOADED_TO_HARDWARE`. It exists so a key that could not be uploaded
-at ASSOC still gets another chance as the station reaches the fully authorized
-state.
+The driver callback for AUTH to ASSOC runs earlier in the function and may fail
+the upward transition. The upload helper is reached only after that callback
+succeeds, so the driver-side station is prepared before `set_key()` is retried.
 
 ## Why this is not the naive workaround
 
@@ -379,8 +331,9 @@ lifecycle.
 This patch is narrower:
 
 - early acceptance is limited to AP/AP_VLAN pairwise keys;
+- drivers controlling software fallback retain the old rejection;
 - early hardware upload is blocked until ASSOC;
-- upload retries are attached to explicit station transitions;
+- one hardware-upload retry is attached to AUTH to ASSOC;
 - non-AP and non-pairwise behavior keeps the old gate.
 
 ## Failure modes before the patch
@@ -415,6 +368,20 @@ key to the driver before the driver-side station is ready. The fix must
 therefore avoid simply moving the rejection from mac80211 into driver `set_key()`
 handling.
 
+An in-tree driver audit shows why a generic early `set_key()` call cannot be
+assumed:
+
+- mt7915 explicitly returns `-EOPNOTSUPP` while `wcid->sta` is clear and sets
+  that readiness bit during AUTH to ASSOC;
+- wlcore allocates the AP station's firmware link during AUTH to ASSOC, so an
+  earlier callback does not yet have a valid per-station firmware target;
+- ath10k, ath11k, and ath12k create firmware peers earlier, but the existing
+  mac80211 flags do not promise that general pre-association readiness.
+
+The refined patch therefore defers without calling the driver only when normal
+software fallback is allowed. It leaves other drivers on the established
+rejection path rather than inferring readiness from an unrelated flag.
+
 ## Review-driven constraints captured by the patch
 
 The PR discussion raised several design constraints that are reflected in the
@@ -424,17 +391,14 @@ current mac80211 patch:
   can bitrot against future kernel backports.
 - The hardware-upload skip must be scoped to AP/AP_VLAN pairwise keys, matching
   the relaxation in `cfg.c`.
-- The pre-ASSOC skip must happen before the generic `sta && !sta->uploaded`
-  path and set `ret = 1`, so drivers with `SW_CRYPTO_CONTROL` can keep the key
-  in software until the later ASSOC retry.
-- The station-state retry helper is explicitly AP/AP_VLAN-scoped, so the generic
-  `_sta_info_move_state()` transitions do not make non-AP stations scan key
-  lists.
-- Upload retry should not have an outer silent `!sta->uploaded` return. The
-  existing `ieee80211_key_enable_hw_accel()` helper already owns that check.
-- AP_VLAN setups need both the VLAN and master AP key lists considered.
-- The AUTH to ASSOC and ASSOC to AUTHORIZED retry calls need comments because
-  the second call is intentionally a backup retry, not accidental duplication.
+- A skipped driver callback must not be represented as `ret = 1`; that value is
+  permission from the driver, not a value mac80211 may synthesize.
+- `SW_CRYPTO_CONTROL` drivers therefore keep the old rejection until an
+  explicit pre-association-readiness contract exists.
+- Deferred state belongs on the individual key, and the retry scans only
+  `sta->ptk[]`, avoiding broad interface key-list scans.
+- The AUTH-to-ASSOC driver transition must succeed before the retry calls
+  `set_key()`.
 
 ## Validation noted in the PR
 
@@ -456,26 +420,24 @@ roam test had not yet been run when the AP_VLAN review concern was addressed.
 
 Additional forum testing reported that an earlier revision cleared the log on
 mt76 but still produced `nl80211: kernel reports: key addition failed` on
-ath10k. The current revision was updated after that report by moving the
-pre-ASSOC AP/AP_VLAN pairwise deferral before the generic `sta && !sta->uploaded`
-check and by setting `ret = 1` for the deferred path. That change is intended to
-cover ath10k's `SW_CRYPTO_CONTROL` behavior, but a successful ath10k retest of
-the latest revision has not yet been reported.
+ath10k. ath10k advertises `SW_CRYPTO_CONTROL`, so the refined patch deliberately
+retains that rejection instead of pretending the driver permitted software
+crypto. Supporting drivers that really can install a PTK before ASSOC needs an
+explicit readiness contract; it is not claimed by this patch.
 
 ## Practical result
 
-After the patch, AP-side FT key installation no longer depends on userspace
-winning a retry race after ASSOC. mac80211 accepts the key at the first point
-where it has enough identity to store it safely, then uploads it to the driver
-when the station lifecycle reaches the correct point.
+For drivers that allow automatic software fallback, AP-side FT key installation
+no longer depends on userspace winning a retry race after ASSOC. mac80211
+accepts the key once it has a station identity, then uploads it to the driver
+after the driver's association transition succeeds.
 
 The intended result is:
 
-- no premature `-ENOENT` for AP-side FT pairwise keys;
+- no premature `-ENOENT` for eligible AP-side FT pairwise keys;
 - no premature driver key upload before ASSOC;
-- preserved behavior for non-AP and non-pairwise keys;
-- deterministic retry tied to station state transitions;
-- a fallback retry at AUTHORIZED for edge timing cases.
+- preserved behavior for non-AP, non-pairwise, and `SW_CRYPTO_CONTROL` paths;
+- one deterministic upload retry tied to AUTH to ASSOC.
 
 ## References
 
