@@ -15,32 +15,37 @@ the roam, particularly with PMF.
 Accept pre-association pairwise keys on AP and AP_VLAN interfaces once
 the station exists, but only when mac80211 is allowed to fall back to
 software crypto. Mark only those keys as deferred, keep them in
-mac80211 using the normal software fallback, and upload the marked PTKs
-after the driver's AUTH-to-ASSOC state transition succeeds.
+mac80211 using the normal software fallback, and scan the station's PTK
+slots to upload the marked keys after the driver's AUTH-to-ASSOC state
+transition succeeds. If hardware upload fails, the keys remain usable
+through software crypto.
+
+Before uploading a deferred key, refresh its RX_MGMT and SPP_AMSDU flags
+from the station's association parameters. These capabilities may not
+have been known when the key was installed. Drivers need RX_MGMT to
+select appropriate PMF handling, and software CCMP/GCMP uses SPP_AMSDU
+when constructing authenticated data.
 
 Drivers advertising SW_CRYPTO_CONTROL remain subject to the association
 gate. For those drivers, only a return value of 1 from set_key() permits
 software crypto, and skipping the callback cannot provide that permission.
 
-Some drivers could handle set_key() before association, but mac80211 cannot
-generally assume that an ordinary AP-side FT PTK may be passed to set_key()
-before ASSOC. mt7915 rejects key installation until wcid->sta is set during
-AUTH-to-ASSOC, and wlcore allocates its AP firmware link during that
-transition. The deferred path therefore does not call drivers before ASSOC.
-
-Track deferred state on each key and scan the station's PTK slots at
-ASSOC so hardware upload is limited to keys accepted before association.
+Some drivers could handle set_key() before association, but mac80211 has
+no general readiness contract for an ordinary AP-side FT PTK. mt7915
+rejects key installation until wcid->sta is set during AUTH-to-ASSOC, and
+wlcore allocates its AP firmware link during that transition. The deferred
+path therefore does not call drivers before ASSOC.
 
 Fixes: 1626e0fa740d ("mac80211: fix FT roaming")
-Link: https://lore.kernel.org/r/20260730161531.3535100-1-andcov23@gmail.com
 Link: https://github.com/openwrt/openwrt/pull/23181
+Link: https://lore.kernel.org/r/20260904154804.295802-1-andcov23@gmail.com
 Signed-off-by: Andrea Covelli <andcov23@gmail.com>
 ---
  net/mac80211/cfg.c      | 22 +++++++++++++++++++---
- net/mac80211/key.c      | 31 +++++++++++++++++++++++++++++++
+ net/mac80211/key.c      | 38 ++++++++++++++++++++++++++++++++++++++
  net/mac80211/key.h      |  4 ++++
  net/mac80211/sta_info.c |  1 +
- 4 files changed, 55 insertions(+), 3 deletions(-)
+ 4 files changed, 62 insertions(+), 3 deletions(-)
 
 --- a/net/mac80211/cfg.c
 +++ b/net/mac80211/cfg.c
@@ -70,8 +75,8 @@ Signed-off-by: Andrea Covelli <andcov23@gmail.com>
 +		 * station is associated. If automatic software fallback is
 +		 * allowed, keep it in mac80211 and upload it after the station
 +		 * reaches ASSOC. Drivers with SW_CRYPTO_CONTROL cannot use this
-+		 * path since only their set_key return value can permit software
-+		 * crypto.
++		 * path since only their set_key() return value can permit
++		 * software crypto.
  		 */
 -		if (!sta || !test_sta_flag(sta, WLAN_STA_ASSOC)) {
 +		if (!sta || (!test_sta_flag(sta, WLAN_STA_ASSOC) &&
@@ -87,15 +92,14 @@ Signed-off-by: Andrea Covelli <andcov23@gmail.com>
  	switch (sdata->vif.type) {
 --- a/net/mac80211/key.c
 +++ b/net/mac80211/key.c
-@@ -144,6 +144,15 @@ static int ieee80211_key_enable_hw_accel
+@@ -144,6 +144,14 @@ static int ieee80211_key_enable_hw_accel
  		return -EINVAL;
  	}
  
 +	if (key->flags & KEY_FLAG_DEFERRED_HW_UPLOAD) {
 +		/*
-+		 * Keys are only deferred if automatic software fallback is
-+		 * allowed. Leave ret as -EOPNOTSUPP so the normal fallback path
-+		 * is used without pretending the driver returned 1.
++		 * Deferred keys allow automatic software fallback. Keep ret at
++		 * -EOPNOTSUPP until the station is ready for hardware upload.
 +		 */
 +		goto out_unsupported;
 +	}
@@ -103,7 +107,7 @@ Signed-off-by: Andrea Covelli <andcov23@gmail.com>
  	if (!key->local->ops->set_key)
  		goto out_unsupported;
  
-@@ -994,6 +1003,28 @@ void ieee80211_reenable_keys(struct ieee
+@@ -994,6 +1002,36 @@ void ieee80211_reenable_keys(struct ieee
  	}
  }
  
@@ -119,6 +123,14 @@ Signed-off-by: Andrea Covelli <andcov23@gmail.com>
 +		key = wiphy_dereference(local->hw.wiphy, sta->ptk[i]);
 +		if (!key || !(key->flags & KEY_FLAG_DEFERRED_HW_UPLOAD))
 +			continue;
++
++		/* Capabilities may have changed since key installation. */
++		key->conf.flags &= ~(IEEE80211_KEY_FLAG_RX_MGMT |
++				     IEEE80211_KEY_FLAG_SPP_AMSDU);
++		if (test_sta_flag(sta, WLAN_STA_MFP))
++			key->conf.flags |= IEEE80211_KEY_FLAG_RX_MGMT;
++		if (sta->sta.spp_amsdu)
++			key->conf.flags |= IEEE80211_KEY_FLAG_SPP_AMSDU;
 +
 +		key->flags &= ~KEY_FLAG_DEFERRED_HW_UPLOAD;
 +		ret = ieee80211_key_enable_hw_accel(key);
