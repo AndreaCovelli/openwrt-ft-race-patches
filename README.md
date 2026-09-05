@@ -132,7 +132,9 @@ What it fixes:
   retain the existing rejection.
 - The deferred marker skips the initial hardware `set_key()` call. After the
   driver completes the STA's `AUTH`-to-`ASSOC` transition, mac80211 scans the
-  STA's PTK slots and uploads the marked keys.
+  STA's PTK slots, refreshes each marked key's PMF (`RX_MGMT`) and SPP A-MSDU
+  flags from the association parameters, and uploads it. Keys remain usable
+  through software crypto if hardware upload fails.
 - `hostapd` re-adds an unassociated kernel STA before the first FT PTK install
   when userspace still has a STA entry but the kernel entry was removed after
   disassociation. This covers the FT-over-DS/WDS error path where key install
