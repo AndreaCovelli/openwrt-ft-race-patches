@@ -126,6 +126,9 @@ sha256sum "$PATCH"
   SHA-256 into the matching `EXTRA_PATCH_SHA256S` entry in each affected lock.
 
 What it fixes:
+- The mac80211 patch follows wireless-next v4 (source commit
+  `33d4e0eb234c721f655bf6386ca3faf62f09626d`), adapted to the pinned
+  backports 6.18.26 sources.
 - When automatic software fallback is allowed, `mac80211` accepts AP / AP_VLAN
   pre-`ASSOC` pairwise keys once a STA object exists and marks each accepted
   key for deferred hardware upload. Drivers advertising `SW_CRYPTO_CONTROL`
@@ -133,8 +136,10 @@ What it fixes:
 - The deferred marker skips the initial hardware `set_key()` call. After the
   driver completes the STA's `AUTH`-to-`ASSOC` transition, mac80211 scans the
   STA's PTK slots, refreshes each marked key's PMF (`RX_MGMT`) and SPP A-MSDU
-  flags from the association parameters, and uploads it. Keys remain usable
-  through software crypto if hardware upload fails.
+  flags from the association parameters, and uploads it. The refreshed flags
+  are computed locally and published with `WRITE_ONCE()` so RX/TX readers
+  cannot observe a temporary cleared state. Keys remain usable through
+  software crypto if hardware upload fails.
 - `hostapd` re-adds an unassociated kernel STA before the first FT PTK install
   when userspace still has a STA entry but the kernel entry was removed after
   disassociation. This covers the FT-over-DS/WDS error path where key install

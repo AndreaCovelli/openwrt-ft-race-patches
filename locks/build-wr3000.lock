@@ -21,7 +21,7 @@ FEED_VIDEO_REF='094bf58da6682f895255a35a84349a79dab4bf95'
 
 PATCH_SOURCE='patches/subsys/400-mac80211-defer-ap-side-ft-key-upload.patch'
 PATCH_DEST='package/kernel/mac80211/patches/subsys/400-mac80211-defer-ap-side-ft-key-upload.patch'
-PATCH_SHA256='f8fd443392d3e572dfa75f51e1b58e4e31b5f301fb5e0b18ab5fe71d22edad1a'
+PATCH_SHA256='6b5e75062cf7c91426831c2b86d671bb0d7ea6091596ea33f0ec0855fc5233ad'
 EXTRA_PATCH_SOURCES=(
   'patches/hostapd/022-hostapd-ft-readd-unassociated-sta-before-ptk.patch'
 )
