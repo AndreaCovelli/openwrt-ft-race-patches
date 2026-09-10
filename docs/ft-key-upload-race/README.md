@@ -250,9 +250,8 @@ then checks that marker before calling the driver:
 ```c
 if (key->flags & KEY_FLAG_DEFERRED_HW_UPLOAD) {
 	/*
-	 * Keys are only deferred if automatic software fallback is
-	 * allowed. Leave ret as -EOPNOTSUPP so the normal fallback path
-	 * is used without pretending the driver returned 1.
+	 * Deferred keys allow automatic software fallback. Keep ret at
+	 * -EOPNOTSUPP until the station is ready for hardware upload.
 	 */
 	goto out_unsupported;
 }
@@ -276,6 +275,10 @@ The same file adds `ieee80211_upload_deferred_sta_keys()`. The helper scans only
 the target station's PTK slots:
 
 - it ignores empty slots and keys without `KEY_FLAG_DEFERRED_HW_UPLOAD`;
+- it refreshes `RX_MGMT` and `SPP_AMSDU` from the association parameters,
+  including clearing stale capability flags while preserving unrelated flags;
+- it computes the final flags locally and publishes them with `WRITE_ONCE()`,
+  avoiding a temporary cleared state visible to RX/TX readers;
 - it clears the marker before retrying;
 - it calls the normal `ieee80211_key_enable_hw_accel()` path once.
 
