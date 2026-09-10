@@ -9,6 +9,9 @@ It contains:
 This repo also contains a generic reproducible OpenWrt builder plus example
 device inputs.
 
+See the [FT key upload race guide](docs/ft-key-upload-race/README.md) for the
+patch behavior, driver constraints, and roaming checks.
+
 Build entrypoints:
 - generic: `./scripts/build-image.sh --builder-id <builder-id> locks/<device>.lock`
 - example wrapper: `./scripts/build-wr3000.sh`

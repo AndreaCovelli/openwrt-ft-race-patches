@@ -442,6 +442,21 @@ The intended result is:
 - preserved behavior for non-AP, non-pairwise, and `SW_CRYPTO_CONTROL` paths;
 - one deterministic upload retry tied to AUTH to ASSOC.
 
+## Checking FT roaming
+
+Watch `logread -f` and `dmesg -w` on each AP while repeating bidirectional FT
+roams with continuous client traffic. Check that:
+
+- association logs report `auth_alg=ft`;
+- the client stays connected and traffic continues through the roam;
+- no new hardware key-install, key-remove, or driver errors appear.
+
+Interpret `key addition failed` using the driver constraints above. The patch
+retains pre-association rejection for `SW_CRYPTO_CONTROL` drivers, so that
+message alone does not establish that the patch is missing. If the message
+disappears but traffic still fails, inspect the association and driver logs;
+the absence of that one error does not validate the whole roam.
+
 ## References
 
 - Local mac80211 patch: `../../patches/subsys/400-mac80211-defer-ap-side-ft-key-upload.patch`
