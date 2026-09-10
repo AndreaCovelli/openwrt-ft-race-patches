@@ -52,6 +52,8 @@ scripts/ci/check-upgrade-router-image.sh
 scripts/ci/check-prebuilt-apks.sh
 scripts/ci/check-run-local-docker-build.sh
 scripts/ci/check-incremental-build.sh
+scripts/ci/check-world-config.sh
+scripts/ci/check-ec2-cleanup.sh
 ```
 
 CI also runs a Markdown link check over `README.md` and `docs/**/*.md` with
@@ -77,6 +79,8 @@ Do not run those full build or EC2 commands unless the user asked for them.
 - Use existing helpers and patterns before adding new abstractions.
 - Keep lock files as simple literal assignments and arrays. They are parsed by
   `scripts/lib/build-name.sh` and validated by `scripts/ci/check-locks.sh`.
+- Keep `locks/build.lock` as a relative symlink to `build-wr3000e.lock` so
+  legacy callers always use the same pins and device baseline.
 - Do not introduce commands with side effects into lock files.
 
 ## Lock And Patch Rules

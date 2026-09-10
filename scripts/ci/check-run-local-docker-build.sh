@@ -1,30 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(git rev-parse --show-toplevel)"
-wrapper="$repo_root/scripts/run-local-docker-build.sh"
-lock_file="$repo_root/locks/build-wr3000.lock"
-tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/check-local-build.XXXXXXXX")"
-fake_docker="$tmp_root/docker"
-test_prefix="ci-local-build-${tmp_root##*.}"
-sessions=(
-  "$test_prefix-first"
-  "$test_prefix-second"
-  "$test_prefix-fail"
-  "$test_prefix-checksum"
-)
-workspace="$test_prefix-workspace"
-record_file="$tmp_root/docker-record.tsv"
-
-cleanup() {
-  rm -rf "$tmp_root"
-  rm -rf "$repo_root/build/$workspace"
-  rm -f "$repo_root/build/.openwrt-ft-locks/$workspace.lock"
-  rmdir "$repo_root/build/.openwrt-ft-locks" 2>/dev/null || true
-  rmdir "$repo_root/build" 2>/dev/null || true
-}
-trap cleanup EXIT
-
 die() {
   printf 'error: %s\n' "$*" >&2
   exit 1
@@ -111,6 +87,10 @@ fake_docker_main() {
       sha256sum firmware.bin >sha256sums.txt
     fi
   )
+  if [[ -n "${FAKE_DOCKER_COLLISION_DIR:-}" ]]; then
+    mkdir -p "$FAKE_DOCKER_COLLISION_DIR"
+    printf 'preserve me\n' >"$FAKE_DOCKER_COLLISION_DIR/sentinel"
+  fi
 }
 
 if [[ "$(basename -- "$0")" == 'docker' ]]; then
@@ -118,7 +98,23 @@ if [[ "$(basename -- "$0")" == 'docker' ]]; then
   exit
 fi
 
-ln -s "$repo_root/scripts/ci/check-run-local-docker-build.sh" "$fake_docker"
+source_repo="$(git rev-parse --show-toplevel)"
+tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/check-local-build.XXXXXXXX")"
+trap 'rm -rf "$tmp_root"' EXIT
+# Unsafe destination tests must never point the wrapper at the real checkout.
+repo_root="$tmp_root/repo"
+mkdir -p "$repo_root/scripts/lib" "$repo_root/locks"
+cp "$source_repo/scripts/run-local-docker-build.sh" "$repo_root/scripts/"
+cp "$source_repo/scripts/lib/"{build-name,prebuilt-apks}.sh "$repo_root/scripts/lib/"
+cp "$source_repo/locks/build-wr3000.lock" "$repo_root/locks/"
+wrapper="$repo_root/scripts/run-local-docker-build.sh"
+lock_file="$repo_root/locks/build-wr3000.lock"
+fake_docker="$tmp_root/docker"
+test_prefix='ci-local-build'
+sessions=("$test_prefix-first" "$test_prefix-second" "$test_prefix-fail" "$test_prefix-checksum")
+workspace="$test_prefix-workspace"
+record_file="$tmp_root/docker-record.tsv"
+ln -s "$source_repo/scripts/ci/check-run-local-docker-build.sh" "$fake_docker"
 
 run_wrapper() {
   local session="$1"
@@ -179,6 +175,40 @@ if FAKE_DOCKER_BAD_CHECKSUM=1 \
 fi
 [[ -d "$repo_root/build/$workspace" ]] ||
   die 'workspace with bad copied artifact checksum was not retained'
+[[ ! -e "$checksum_artifacts" ]] || die 'bad checksums published an artifact bundle'
+if compgen -G "$tmp_root/.openwrt-ft-artifacts.*" >/dev/null; then
+  die 'failed checksum verification leaked artifact staging directories'
+fi
+
+mkdir -p "$tmp_root/empty-destination"
+printf 'preserve me\n' >"$repo_root/sentinel"
+ln -s "$tmp_root/nonexistent-target" "$tmp_root/dangling-link"
+ln -s "$repo_root" "$tmp_root/repo-link"
+record_before="$(sha256sum "$record_file")"
+for destination in . "$repo_root/.." "$tmp_root/empty-destination" \
+  "$first_artifacts" "$repo_root/sentinel" "$tmp_root/dangling-link" \
+  "$tmp_root/repo-link" "$tmp_root/repo-link/new/../.." \
+  "$repo_root/build/$workspace/nested-output" "$tmp_root/cache/nested-output"; do
+  if run_wrapper "$test_prefix-unsafe" "$destination" >"$tmp_root/unsafe.log" 2>&1; then
+    die "unsafe or existing artifact destination was accepted: $destination"
+  fi
+  [[ "$(sha256sum "$record_file")" == "$record_before" ]] ||
+    die 'rejected artifact destination started a container build'
+done
+[[ -f "$repo_root/sentinel" && -d "$tmp_root/empty-destination" && -L "$tmp_root/dangling-link" ]] ||
+  die 'destination checks removed existing files, directories, or symlinks'
+[[ -f "$first_artifacts/firmware.bin" ]] || die 'destination checks removed an earlier bundle'
+
+late_artifacts="$tmp_root/artifacts-collision"
+if FAKE_DOCKER_COLLISION_DIR="$late_artifacts" \
+  run_wrapper "$test_prefix-collision" "$late_artifacts" >"$tmp_root/collision.log" 2>&1; then
+  die 'destination created during the build was overwritten'
+fi
+[[ "$(cat "$late_artifacts/sentinel")" == 'preserve me' && ! -e "$late_artifacts/firmware.bin" ]] ||
+  die 'late destination collision damaged existing output'
+if compgen -G "$tmp_root/.openwrt-ft-artifacts.*" >/dev/null; then
+  die 'late destination collision leaked artifact staging directories'
+fi
 
 exec 9>>"$repo_root/build/.openwrt-ft-locks/$workspace.lock"
 flock -n 9

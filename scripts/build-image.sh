@@ -13,6 +13,8 @@ source "$SCRIPT_DIR/lib/build-name.sh"
 source "$SCRIPT_DIR/lib/local-feeds.sh"
 # shellcheck source=scripts/lib/prebuilt-apks.sh
 source "$SCRIPT_DIR/lib/prebuilt-apks.sh"
+# shellcheck source=scripts/lib/world-config.sh
+source "$SCRIPT_DIR/lib/world-config.sh"
 
 usage() {
   cat <<EOF
@@ -230,7 +232,10 @@ apply_pinned_patches() {
     sha256="${PINNED_PATCH_SHA256S[$i]}"
     log "Applying pinned patch: $dest"
     verify_sha256 "$source_abs" "$sha256"
-    install -D -m 0644 "$source_abs" "$OPENWRT_DIR/$dest"
+    # OpenWrt includes patch mtimes in its package preparation stamps.
+    if ! cmp -s "$source_abs" "$OPENWRT_DIR/$dest"; then
+      install -D -m 0644 "$source_abs" "$OPENWRT_DIR/$dest"
+    fi
   done
 }
 
@@ -966,6 +971,9 @@ log "Workspace: $BUILD_ROOT"
 log "Session: $BUILD_ID"
 log "Build mode: $BUILD_MODE"
 log "Build log: $BUILD_LOG"
+extract_world >"$REPORT_DIR/reference.world"
+[[ -s "$REPORT_DIR/reference.world" ]] || die "failed to extract world entries from $WORLD_SOURCE_ABS"
+write_manifest_builtin_package_names | sort -u >"$REPORT_DIR/builtin-package-names.txt"
 download_prebuilt_apks
 if [[ "$BUILD_MODE" == 'full' ]]; then
   log "Cloning OpenWrt core"
@@ -1023,9 +1031,29 @@ else
   apply_pinned_patches
 fi
 
+log "Resolving apk world package selections"
+world_config_resolve "$OPENWRT_DIR/tmp/.packageinfo" \
+  "$REPORT_DIR/reference.world" "$REPORT_DIR/builtin-package-names.txt" \
+  | sort -u >"$REPORT_DIR/world-config.tsv"
+world_config_missing "$REPORT_DIR/world-config.tsv" "$OPENWRT_DIR/.config" \
+  >"$REPORT_DIR/world-unselected-package-names.txt"
+if [[ "$BUILD_MODE" == 'full' && -s "$REPORT_DIR/world-unselected-package-names.txt" ]]; then
+  log "Selecting captured apk world packages in device config"
+  world_config_apply "$REPORT_DIR/world-config.tsv" "$OPENWRT_DIR/.config" \
+    >"$OPENWRT_DIR/.config.world"
+  mv "$OPENWRT_DIR/.config.world" "$OPENWRT_DIR/.config"
+  (
+    cd "$OPENWRT_DIR"
+    make defconfig
+  )
+  world_config_missing "$REPORT_DIR/world-config.tsv" "$OPENWRT_DIR/.config" \
+    >"$REPORT_DIR/world-unselected-package-names.txt"
+fi
 cp "$OPENWRT_DIR/.config" "$REPORT_DIR/final.config"
-extract_world >"$REPORT_DIR/reference.world"
-[[ -s "$REPORT_DIR/reference.world" ]] || die "failed to extract world entries from $WORLD_SOURCE_ABS"
+if [[ -s "$REPORT_DIR/world-unselected-package-names.txt" ]]; then
+  cat "$REPORT_DIR/world-unselected-package-names.txt" >&2
+  die "apk world packages cannot be selected for this target; see $REPORT_DIR/world-unselected-package-names.txt"
+fi
 
 if [[ "$BUILD_MODE" == 'full' ]]; then
   log "Downloading sources"
@@ -1104,7 +1132,6 @@ parse_manifest "$REFERENCE_MANIFEST_ABS" | sort >"$REPORT_DIR/reference.tsv"
 parse_manifest "$BUILT_MANIFEST" | sort >"$REPORT_DIR/built.tsv"
 cut -f1 "$REPORT_DIR/reference.tsv" >"$REPORT_DIR/reference.names"
 cut -f1 "$REPORT_DIR/built.tsv" >"$REPORT_DIR/built.names"
-write_manifest_builtin_package_names | sort -u >"$REPORT_DIR/builtin-package-names.txt"
 write_local_feed_digests | sort >"$REPORT_DIR/local-feed-digests.tsv"
 write_prebuilt_apk_digests | sort >"$REPORT_DIR/prebuilt-apks.tsv"
 write_patch_metadata >"$REPORT_DIR/patches.tsv"

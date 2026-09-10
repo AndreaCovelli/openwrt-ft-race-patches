@@ -84,6 +84,9 @@ V:6.12.74~f8127f4e841121b7a9126117c4b2fb3c-r1
 
 P:luci
 V:26.001
+
+P:htop
+V:3.4.1-r1
 APKDB
     ;;
   'apk list --installed')
@@ -91,6 +94,7 @@ APKDB
 base-files-1699~f505120278 aarch64_cortex-a53 {feeds/base/base-files} (GPL-2.0) [installed]
 kernel-6.12.74~f8127f4e841121b7a9126117c4b2fb3c-r1 aarch64_cortex-a53 {feeds/base/kernel} (GPL-2.0) [installed]
 luci-26.001 noarch {feeds/luci/collections/luci} (Apache-2.0) [installed]
+htop-3.4.1-r1 aarch64_cortex-a53 {feeds/packages/htop} (GPL-2.0) [installed]
 APKLIST
     ;;
   'cat /etc/apk/world')
@@ -98,6 +102,7 @@ APKLIST
 base-files=1699~f505120278
 kernel=6.12.74~f8127f4e841121b7a9126117c4b2fb3c-r1
 luci
+htop=3.4.1-r1
 WORLD
     ;;
   *)
@@ -238,6 +243,23 @@ assert_file_contains "$repo_tmp/devices/wr3000e/apk-installed-and-world.txt" '__
 assert_file_contains "$repo_tmp/devices/wr3000e/apk-installed-and-world.txt" 'kernel'
 assert_file_not_contains "$repo_tmp/devices/wr3000e/apk-installed-and-world.txt" 'kernel='
 assert_file_contains "$out_up_to_date" 'Router is already on 25.12.4; build not started.'
+
+cat >"$tmp_root/build-wrapper" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$PATH" == "$EXPECTED_BUILDER_PATH" ]]
+[[ "$1" == --no-strict-manifest && "$2" == --make-jobs && "$3" == 4 ]]
+# shellcheck source=/dev/null
+source "${@: -1}"
+awk 'found { print } /^__WORLD__$/ { found=1 }' "$WORLD_SOURCE" >"$TEST_CAPTURED_WORLD"
+EOF
+chmod +x "$tmp_root/build-wrapper"
+EXPECTED_BUILDER_PATH="$PATH" TEST_CAPTURED_WORLD="$tmp_root/captured.world" \
+  BUILD_SCRIPT="$tmp_root/build-wrapper" scripts/prepare-openwrt-upgrade.sh \
+    --version 25.12.4 router .tmp-prepare-openwrt-upgrade-test/build-wr3000e.lock \
+    -- --make-jobs 4 >"$tmp_root/prepare-and-build.out"
+grep -Fqx 'htop' "$tmp_root/captured.world" || die 'newly installed package was not passed to the builder world input'
+assert_file_contains "$repo_tmp/devices/wr3000e/installed.manifest" 'htop - 3.4.1-r1'
 
 if TEST_ROUTER_BOARD='cudy,wr3000-v1' scripts/prepare-openwrt-upgrade.sh --dry-run router locks/build-wr3000e.lock >"$out_board_mismatch" 2>&1; then
   die 'board mismatch unexpectedly succeeded'

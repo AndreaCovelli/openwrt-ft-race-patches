@@ -23,7 +23,7 @@ Options:
                             openwrt-ft-<device-id>-<openwrt-version>-<variant>-<utc>.
   --workspace NAME          Reusable build workspace. Default:
                             build/openwrt-ft-<device-id>-dev.
-  --artifact-dir DIR        Local artifact output. Default:
+  --artifact-dir DIR        New local artifact directory (must not exist). Default:
                             ./openwrt-artifacts/<session>.
   --fresh                   Replace the exact workspace and run a full build.
   --rebuild-package NAME    Force an incremental package rebuild. Repeatable;
@@ -299,20 +299,37 @@ if [[ "$HOST_CACHE_DIR" != /* ]]; then
 fi
 WORKSPACE_DIR="$REPO_ROOT/build/$WORKSPACE_NAME"
 
-require_cmd cp date flock "$OPENWRT_DOCKER_BIN" mkdir realpath rm sha256sum
+require_cmd cp date flock "$OPENWRT_DOCKER_BIN" mkdir mktemp mv realpath rm sha256sum
 
 [[ ! -L "$WORKSPACE_DIR" ]] ||
   die "workspace must not be a symbolic link: $WORKSPACE_DIR"
+[[ ! -e "$ARTIFACT_DIR" && ! -L "$ARTIFACT_DIR" ]] ||
+  die "artifact destination already exists; choose a new directory: $ARTIFACT_DIR"
 ARTIFACT_DIR="$(realpath -m -- "$ARTIFACT_DIR")"
 HOST_CACHE_DIR="$(realpath -m -- "$HOST_CACHE_DIR")"
 WORKSPACE_DIR="$(realpath -m -- "$WORKSPACE_DIR")"
+[[ ! -e "$ARTIFACT_DIR" && ! -L "$ARTIFACT_DIR" ]] ||
+  die "artifact destination already exists; choose a new directory: $ARTIFACT_DIR"
 
 case "$ARTIFACT_DIR" in
   "$WORKSPACE_DIR"|"$WORKSPACE_DIR"/*)
     die "artifact directory must be outside the build workspace: $ARTIFACT_DIR"
     ;;
 esac
+case "$WORKSPACE_DIR" in
+  "$ARTIFACT_DIR"/*)
+    die "artifact directory must not contain the build workspace: $ARTIFACT_DIR"
+    ;;
+esac
+case "$ARTIFACT_DIR" in
+  "$HOST_CACHE_DIR"|"$HOST_CACHE_DIR"/*)
+    die "artifact directory must be outside the cache: $ARTIFACT_DIR"
+    ;;
+esac
 case "$HOST_CACHE_DIR" in
+  "$ARTIFACT_DIR"/*)
+    die "artifact directory must not contain the cache: $ARTIFACT_DIR"
+    ;;
   "$WORKSPACE_DIR"|"$WORKSPACE_DIR"/*)
     die "cache directory must be outside the build workspace: $HOST_CACHE_DIR"
     ;;
@@ -425,17 +442,31 @@ fi
   "$IMAGE_TAG" \
   ./scripts/build-image.sh "$LOCK_FILE_REL"
 
-log "Copying build output to $ARTIFACT_DIR"
-rm -rf "$ARTIFACT_DIR"
-mkdir -p "$ARTIFACT_DIR"
-cp -a "$WORKSPACE_DIR/output/." "$ARTIFACT_DIR/"
+log "Copying build output for $ARTIFACT_DIR"
+mkdir -p -- "${ARTIFACT_DIR%/*}"
+ARTIFACT_STAGING_DIR="$(mktemp -d "${ARTIFACT_DIR%/*}/.openwrt-ft-artifacts.XXXXXXXX")"
+cleanup_artifact_staging() {
+  local status=$?
+  if [[ -n "$ARTIFACT_STAGING_DIR" ]]; then
+    rm -rf -- "$ARTIFACT_STAGING_DIR"
+  fi
+  exit "$status"
+}
+trap cleanup_artifact_staging EXIT
+cp -a "$WORKSPACE_DIR/output/." "$ARTIFACT_STAGING_DIR/"
 
-[[ -f "$ARTIFACT_DIR/sha256sums.txt" ]] ||
-  die "artifact checksum file not found: $ARTIFACT_DIR/sha256sums.txt"
+[[ -f "$ARTIFACT_STAGING_DIR/sha256sums.txt" ]] ||
+  die "artifact checksum file not found in build output"
 log "Verifying copied artifact checksums"
 (
-  cd "$ARTIFACT_DIR"
+  cd "$ARTIFACT_STAGING_DIR"
   sha256sum -c sha256sums.txt
 )
+# -T prevents nesting into an existing directory; --no-clobber also protects
+# destinations created while the build was running. A skipped move exits zero.
+mv -T --no-clobber -- "$ARTIFACT_STAGING_DIR" "$ARTIFACT_DIR"
+[[ ! -d "$ARTIFACT_STAGING_DIR" ]] ||
+  die "artifact destination appeared during the build; preserved it: $ARTIFACT_DIR"
+ARTIFACT_STAGING_DIR=''
 log "Artifact directory: $ARTIFACT_DIR"
 log "Build workspace retained: $WORKSPACE_DIR"

@@ -85,6 +85,10 @@ cat >"$bin_dir/gh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "$*" == 'api user --jq .login' ]]; then
+  printf 'fake-host-user\n'
+  exit 0
+fi
 [[ "${1:-}" == 'auth' && "${2:-}" == 'token' ]] || exit 1
 case "${FAKE_GH_TOKEN_MODE:-missing}" in
   token)
@@ -156,5 +160,42 @@ export FAKE_GH_TOKEN='gh-token'
 export GITHUB_TOKEN='env-token'
 rm -f "$dl_dir/usteer.apk"
 prebuilt_apk_download_one "$dl_dir" "$entry"
+assert_contains "$FAKE_CURL_LOG" 'Authorization: Bearer gh-token'
+assert_not_contains "$FAKE_CURL_LOG" 'Authorization: Bearer env-token'
+
+# Exercise the orchestrator with gh available only on the original host PATH.
+# SSH functions consume scripts without executing them; SCP stops before upload.
+fixture="$tmp_root/repo"
+mkdir -p "$fixture/scripts/lib" "$fixture/locks"
+cp "$repo_root/scripts/orchestrate-ec2-build.sh" "$fixture/scripts/"
+cp "$repo_root/scripts/lib/"{build-name,prebuilt-apks}.sh "$fixture/scripts/lib/"
+printf "PREBUILT_APKS=('%s')\n" "$entry" >"$fixture/locks/test.lock"
+git -C "$fixture" init -q
+git -C "$fixture" add scripts locks
+export FAKE_SSH_LOG="$tmp_root/ssh.log"
+ssh() {
+  local input
+  input="$(cat)"
+  if [[ "$*" == *'docker login ghcr.io'* ]]; then
+    [[ "$*" == *'fake-host-user'* && "$input" == 'fake-registry-token' ]] || return 81
+    printf 'registry-authenticated\n' >>"$FAKE_SSH_LOG"
+  else
+    printf 'remote_root=/fake/remote\ncache_dir=/fake/cache\n'
+  fi
+}
+scp() {
+  printf 'snapshot-ready\n' >>"$FAKE_SSH_LOG"
+  return 73
+}
+export -f ssh scp
+: >"$FAKE_CURL_LOG"
+orchestrator_status=0
+GHCR_TOKEN='fake-registry-token' GHCR_USERNAME='' GITHUB_ACTOR='' \
+  "$fixture/scripts/orchestrate-ec2-build.sh" --session test-host-auth \
+    fake-host locks/test.lock >"$tmp_root/orchestrator.log" 2>&1 || orchestrator_status=$?
+unset -f ssh scp
+[[ "$orchestrator_status" == 73 ]] || die 'orchestrator did not reach the mocked snapshot upload'
+assert_contains "$FAKE_SSH_LOG" 'registry-authenticated'
+assert_contains "$FAKE_SSH_LOG" 'snapshot-ready'
 assert_contains "$FAKE_CURL_LOG" 'Authorization: Bearer gh-token'
 assert_not_contains "$FAKE_CURL_LOG" 'Authorization: Bearer env-token'
