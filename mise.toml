@@ -12,12 +12,12 @@ run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 
-mapfile -t files < <(git ls-files 'scripts/*.sh' 'scripts/**/*.sh' 'locks/*.lock' | sort -u)
+mapfile -t files < <(git ls-files --cached --others --exclude-standard 'scripts/*.sh' 'scripts/**/*.sh' 'locks/*.lock' | sort -u)
 for file in "${files[@]}"; do
   bash -n "$file"
 done
 
-mapfile -t scripts < <(git ls-files 'scripts/*.sh' 'scripts/**/*.sh' | sort -u)
+mapfile -t scripts < <(git ls-files --cached --others --exclude-standard 'scripts/*.sh' 'scripts/**/*.sh' | sort -u)
 shellcheck --severity=warning -x "${scripts[@]}"
 
 mapfile -t locks < <(git ls-files 'locks/*.lock' | sort)
@@ -28,6 +28,8 @@ scripts/ci/check-upgrade-router-image.sh
 scripts/ci/check-prebuilt-apks.sh
 scripts/ci/check-run-local-docker-build.sh
 scripts/ci/check-incremental-build.sh
+scripts/ci/check-world-config.sh
+scripts/ci/check-ec2-cleanup.sh
 actionlint .github/workflows/ci.yml
 '''
 

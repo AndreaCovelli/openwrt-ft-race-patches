@@ -2,6 +2,7 @@
 set -euo pipefail
 
 umask 022
+HOST_PATH="${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
 export PATH="$HOME/.local/share/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -277,8 +278,24 @@ SECURITY_GROUP_ID=''
 INSTANCE_ID=''
 SSH_CONFIG_FILE=''
 
+retry_ec2_cleanup() {
+  local attempt
+  for attempt in 1 2 3; do
+    if aws_ec2 "$@" >/dev/null; then
+      return 0
+    fi
+    printf 'warning: EC2 cleanup attempt %s/3 failed: %s\n' "$attempt" "$*" >&2
+    if ((attempt < 3)); then
+      sleep 2
+    fi
+  done
+  return 1
+}
+
 cleanup() {
   local status=$?
+  local cleanup_failed=0
+  trap - EXIT
   set +e
 
   if [[ "$KEEP_INSTANCE" == '1' ]]; then
@@ -291,12 +308,22 @@ cleanup() {
   else
     if [[ -n "$INSTANCE_ID" ]]; then
       log "Terminating EC2 builder: $INSTANCE_ID"
-      aws_ec2 terminate-instances --instance-ids "$INSTANCE_ID" >/dev/null 2>&1
-      aws_ec2 wait instance-terminated --instance-ids "$INSTANCE_ID" >/dev/null 2>&1
+      if retry_ec2_cleanup terminate-instances --instance-ids "$INSTANCE_ID"; then
+        retry_ec2_cleanup wait instance-terminated --instance-ids "$INSTANCE_ID" || cleanup_failed=1
+      else
+        cleanup_failed=1
+      fi
     fi
     if [[ -n "$SECURITY_GROUP_ID" ]]; then
       log "Deleting EC2 security group: $SECURITY_GROUP_ID"
-      aws_ec2 delete-security-group --group-id "$SECURITY_GROUP_ID" >/dev/null 2>&1
+      retry_ec2_cleanup delete-security-group --group-id "$SECURITY_GROUP_ID" || cleanup_failed=1
+    fi
+    if ((cleanup_failed)); then
+      printf 'error: EC2 cleanup incomplete; check instance=%s security-group=%s region=%s manually\n' \
+        "${INSTANCE_ID:-none}" "${SECURITY_GROUP_ID:-none}" "${AWS_REGION:-AWS CLI default}" >&2
+      if ((status == 0)); then
+        status=1
+      fi
     fi
   fi
 
@@ -459,7 +486,7 @@ fi
 
 log "Starting EC2 OpenWrt build"
 set +e
-SSH_CONFIG_FILE="$SSH_CONFIG_FILE" "$SCRIPT_DIR/orchestrate-ec2-build.sh" \
+PATH="$HOST_PATH" SSH_CONFIG_FILE="$SSH_CONFIG_FILE" "$SCRIPT_DIR/orchestrate-ec2-build.sh" \
   "${orchestrator_args[@]}" \
   openwrt-ft-ec2-builder \
   "$LOCK_FILE_REL"

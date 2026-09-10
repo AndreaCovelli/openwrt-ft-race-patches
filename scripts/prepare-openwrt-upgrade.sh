@@ -2,6 +2,7 @@
 set -euo pipefail
 
 umask 022
+HOST_PATH="${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
 export PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 if [[ -n "${PREPARE_OPENWRT_UPGRADE_PATH_PREFIX:-}" ]]; then
   export PATH="$PREPARE_OPENWRT_UPGRADE_PATH_PREFIX:$PATH"
@@ -626,4 +627,5 @@ fi
 
 trap - EXIT
 cleanup
+export PATH="$HOST_PATH"
 exec "${BUILD_CMD[@]}"

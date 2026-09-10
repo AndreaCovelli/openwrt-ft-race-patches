@@ -42,6 +42,10 @@ Build verification:
   `openwrt-artifacts/<session>/` bundle. Direct builds use the same stable
   workspace default. Use `--workspace <name>` for an independent tree for the
   same device.
+- Local artifact destinations must be new directories outside the build
+  workspace and cache. The wrapper verifies checksums in a temporary directory
+  before publishing the bundle and refuses to overwrite an existing path,
+  including one created while the build runs.
 - Build artifacts include `logs/build.log` with the builder stdout/stderr.
   If OpenWrt writes package build logs, those are saved under `logs/openwrt/`.
 - Lock files can list `MANIFEST_BUILTIN_PACKAGE_NAMES` for packages that are
@@ -59,6 +63,14 @@ Build verification:
   `GITHUB_TOKEN` if the GitHub CLI token is unavailable. The EC2 orchestrator
   downloads those assets locally and copies them into the remote download cache
   so GitHub repository credentials are not sent to the remote host.
+- The builder selects captured `apk world` packages in addition to the device
+  `diffconfig`. It maps ABI-suffixed APK names to Kconfig symbols using the
+  pinned OpenWrt package metadata, then runs `make defconfig` and checks that
+  each required package is selected for the image. Unavailable names or
+  selections rejected by target dependencies fail before source downloads and
+  compilation. The mapping is saved in `reports/world-config.tsv`. OpenWrt's
+  automatic `kernel` package and the lock's explicit built-in package exceptions
+  need no Kconfig selection; final manifest requirements still apply.
 - To allow intentional package drift while still writing drift reports, run with
   `STRICT_MANIFEST=0 ./scripts/build-image.sh --builder-id <builder-id> locks/<device>.lock`
   or pass
@@ -150,6 +162,8 @@ Device lock inputs in this repo:
 - `locks/build-wr3000e.lock`
 - `locks/build-wr3000p.lock`
 - `locks/build-wr3000e-main.lock` for a main-branch compile check only
+- `locks/build.lock` is a compatibility symlink to `build-wr3000e.lock`, so it
+  always uses the same pins and device baseline.
 
 Example device metadata in this repo:
 - `devices/wr3000/diffconfig`
@@ -182,6 +196,8 @@ Local Docker builds:
   build trees.
 - Patch checksum changes automatically clean and compile the affected
   `mac80211` or `hostapd` package before the normal incremental image build.
+  Identical patches keep their existing timestamps so OpenWrt preparation
+  stamps remain valid for packages that have not changed.
   Use repeatable `--rebuild-package mac80211`, `--rebuild-package hostapd`, or
   `--rebuild-package all` to force those steps without changing a patch.
 - Reuse is refused when pinned repositories, feeds, target/config baselines,
@@ -226,6 +242,11 @@ EC2 orchestration:
   and terminates/deletes the temporary EC2 resources on exit. By default it
   uses a `c8a.xlarge` instance and a 30 GiB gp3 root volume; set `--key-name`
   and `--key-file` when the defaults do not match your AWS account.
+- Cleanup retries failed termination, termination waits, and security group
+  deletion up to three times. Persistent failures report the AWS diagnostics,
+  resource IDs, and region for manual cleanup, and make an otherwise successful
+  build command exit nonzero. An existing build failure keeps its exit status.
+  `--keep-instance` intentionally retains the instance and security group.
 - The upload snapshot contains tracked repo files by default. Pass
   `--include-untracked` only when intentionally sending untracked, non-ignored
   local files to the EC2 host.
@@ -246,6 +267,8 @@ EC2 orchestration:
   those APKs locally using `gh auth token` or `GITHUB_TOKEN`, copies them into
   the remote download cache, and does not pass GitHub repository credentials
   into the remote host or builder container.
+  Both host authentication lookups retain the caller's `PATH`, including a
+  `gh` installation managed by Mise.
   Use
   `--rebuild-builder-image` to rebuild `docker/Dockerfile.ec2` on the remote
   host. When rebuilding, the Dockerfile uses `ubuntu:noble-20260410` and the

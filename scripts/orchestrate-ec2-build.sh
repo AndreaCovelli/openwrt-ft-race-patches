@@ -2,6 +2,7 @@
 set -euo pipefail
 
 umask 022
+HOST_PATH="${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
 export PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -274,7 +275,8 @@ set -euo pipefail
 REMOTE
 }
 
-detect_ghcr_username() {
+detect_ghcr_username() (
+  export PATH="$HOST_PATH"
   if [[ -n "${GHCR_USERNAME:-}" ]]; then
     printf '%s\n' "$GHCR_USERNAME"
     return 0
@@ -288,7 +290,7 @@ detect_ghcr_username() {
   if command -v gh >/dev/null 2>&1; then
     gh api user --jq .login 2>/dev/null || true
   fi
-}
+)
 
 lock_prebuilt_apks() {
   (
@@ -492,7 +494,10 @@ trap cleanup EXIT
 mapfile -d '' -t LOCK_PREBUILT_APKS < <(lock_prebuilt_apks)
 if ((${#LOCK_PREBUILT_APKS[@]} > 0)); then
   log "Downloading pinned prebuilt APKs before remote build"
-  prebuilt_apk_download_all "$PREBUILT_APK_CACHE" "${LOCK_PREBUILT_APKS[@]}"
+  (
+    export PATH="$HOST_PATH"
+    prebuilt_apk_download_all "$PREBUILT_APK_CACHE" "${LOCK_PREBUILT_APKS[@]}"
+  )
 fi
 
 if [[ "$INCLUDE_UNTRACKED" == '1' ]]; then

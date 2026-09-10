@@ -83,9 +83,13 @@ all:
 	@printf 'sysupgrade\n' >bin/targets/test/sub/openwrt-test-fake-device-squashfs-sysupgrade.bin
 	@printf 'initramfs\n' >bin/targets/test/sub/openwrt-test-fake-device-initramfs-kernel.bin
 	@printf 'base - 1\n' >bin/targets/test/sub/openwrt-test-fake-device.manifest
+	@if grep -Fqx 'CONFIG_PACKAGE_htop=y' .config; then printf 'htop - 1\n' >>bin/targets/test/sub/openwrt-test-fake-device.manifest; fi
 
 defconfig:
 	@printf 'defconfig\n' >>make-calls.log
+	@mkdir -p tmp
+	@printf 'Package: base\n\nPackage: htop\n' >tmp/.packageinfo
+	@if [ "$$FAKE_KCONFIG_DROP_HTOP" = '1' ]; then sed -i '/CONFIG_PACKAGE_htop=/d' .config; fi
 
 download:
 	@printf 'download\n' >>make-calls.log
@@ -117,8 +121,9 @@ cat >"$input_root/world.txt" <<'WORLD'
 installed packages
 __WORLD__
 base=1
+htop=1
 WORLD
-printf 'base - 1\n' >"$input_root/reference.manifest"
+printf 'base - 1\nhtop - 1\n' >"$input_root/reference.manifest"
 printf 'mac80211 patch v1\n' >"$input_root/mac80211.patch"
 printf 'hostapd patch v1\n' >"$input_root/hostapd.patch"
 
@@ -189,10 +194,20 @@ grep -Fqx 'build_mode=full' "$workspace/output/build-summary.txt" ||
   die 'seed build was not recorded as full'
 grep -Fqx "workspace_id=$workspace_id" "$workspace/output/build-summary.txt" ||
   die 'workspace ID is missing from build metadata'
+grep -Fqx 'CONFIG_PACKAGE_htop=y' "$workspace/openwrt/.config" ||
+  die 'captured world package absent from diffconfig was not selected'
 
 : >"$workspace/openwrt/make-calls.log"
+mac80211_dest="$workspace/openwrt/package/kernel/mac80211/patches/subsys/mac80211.patch"
+hostapd_dest="$workspace/openwrt/package/network/services/hostapd/patches/hostapd.patch"
+touch -t 200001010000 "$mac80211_dest" "$hostapd_dest"
+mac80211_mtime="$(stat -c %y "$mac80211_dest")"
+hostapd_mtime="$(stat -c %y "$hostapd_dest")"
 printf 'stale\n' >"$workspace/openwrt/bin/targets/test/sub/old-fake-device-stale.bin"
 run_build no-change
+[[ "$(stat -c %y "$mac80211_dest")" == "$mac80211_mtime" && \
+  "$(stat -c %y "$hostapd_dest")" == "$hostapd_mtime" ]] ||
+  die 'no-change reuse touched a patch and invalidated OpenWrt preparation stamps'
 grep -Fqx 'build_mode=incremental' "$workspace/output/build-summary.txt" ||
   die 'compatible reuse was not recorded as incremental'
 grep -Fqx 'rebuilt_packages=none' "$workspace/output/build-summary.txt" ||
@@ -228,6 +243,9 @@ printf 'mac80211 patch v2\n' >"$input_root/mac80211.patch"
 write_lock
 : >"$workspace/openwrt/make-calls.log"
 run_build mac80211-change
+[[ "$(stat -c %y "$hostapd_dest")" == "$hostapd_mtime" ]] ||
+  die 'mac80211-only rebuild touched the hostapd patch'
+cmp -s "$input_root/mac80211.patch" "$mac80211_dest" || die 'changed mac80211 patch was not installed'
 grep -Fqx 'rebuilt_packages=mac80211' "$workspace/output/build-summary.txt" ||
   die 'mac80211 patch change did not select mac80211'
 grep -Fqx 'mac80211-clean' "$workspace/openwrt/make-calls.log" ||
@@ -356,3 +374,22 @@ grep -Fq 'already locked' "$tmp_root/locked.log" ||
   die 'concurrent workspace failure did not identify the lock'
 flock -u 9
 exec 9>&-
+
+if FAKE_KCONFIG_DROP_HTOP=1 run_build unselectable --workspace unselectable >"$tmp_root/unselectable.log" 2>&1; then
+  die 'world package disabled by target Kconfig was accepted'
+fi
+grep -Fq 'apk world packages cannot be selected' "$tmp_root/unselectable.log" ||
+  die 'Kconfig refusal did not identify unselected world packages'
+if grep -Eq '^(download|all)$' "$work_root/unselectable/openwrt/make-calls.log"; then
+  die 'unselectable world package was detected after downloading or compiling'
+fi
+
+printf 'missing-package\n' >>"$input_root/world.txt"
+if run_build unavailable --workspace unavailable >"$tmp_root/unavailable.log" 2>&1; then
+  die 'world package absent from pinned metadata was accepted'
+fi
+grep -Fq 'cannot resolve apk world package' "$tmp_root/unavailable.log" ||
+  die 'unavailable world package was not identified'
+if grep -Eq '^(download|all)$' "$work_root/unavailable/openwrt/make-calls.log"; then
+  die 'unavailable world package was detected after downloading or compiling'
+fi

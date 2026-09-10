@@ -115,6 +115,15 @@ mode itself.
 If the router already runs the selected release, the script refreshes the
 package baseline and exits without starting a build.
 
+During the build, captured world packages are added to the device configuration
+using the pinned OpenWrt package metadata, including the mapping from ABI-suffixed
+APK names to Kconfig symbols. A newly installed package such as `htop` is selected
+even if it was absent from the saved `diffconfig`. The builder rejects packages
+that are unavailable or cannot be selected for the target before downloading
+sources or compiling. Review `reports/world-config.tsv` and
+`reports/world-unselected-package-names.txt` when diagnosing package selection.
+The final manifest still must contain every required world package.
+
 ## Check the repository changes
 
 After preparation, review the changed lock and device baseline files:
@@ -134,6 +143,8 @@ scripts/ci/check-build-names.sh
 scripts/ci/check-prepare-openwrt-upgrade.sh
 scripts/ci/check-upgrade-router-image.sh
 scripts/ci/check-prebuilt-apks.sh
+scripts/ci/check-world-config.sh
+scripts/ci/check-ec2-cleanup.sh
 ```
 
 These checks do not replace the firmware build. They validate the repository
