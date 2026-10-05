@@ -5,19 +5,19 @@
       "source": "AndreaCovelli/my-skills",
       "sourceType": "github",
       "skillPath": "skills/dependabot/SKILL.md",
-      "computedHash": "809479f78d918ccd36408e69ad186817c2a52c4f1937bdd5fad0b524a60f9c76"
+      "computedHash": "4ce69d09b08995f6f00331908d11bb0214f8437ef5f29f5c7b75ee62882af1e4"
     },
     "docker": {
       "source": "AndreaCovelli/my-skills",
       "sourceType": "github",
       "skillPath": "skills/docker/SKILL.md",
-      "computedHash": "944d93d9c87a8a457f7d5883889ece702a0013b225f4fd019aa2f2ca4cd33762"
+      "computedHash": "e0be697116b06a9e62d5256339c13c31b9a18c6f2154dfd43b419e5bc0d0be2e"
     },
     "gh-cli": {
       "source": "AndreaCovelli/my-skills",
       "sourceType": "github",
       "skillPath": "skills/gh-cli/SKILL.md",
-      "computedHash": "3ff614300a9e0aeee0a54dabb8986387018d8e2cf4f7c7fcb9988e50cff7a6f9"
+      "computedHash": "08f30bcbf65ec52bf3a0090e6e5b76693f65f35bc2a286a091c01648ea0d3e19"
     },
     "github-actions-docs": {
       "source": "AndreaCovelli/my-skills",
@@ -35,7 +35,7 @@
       "source": "AndreaCovelli/my-skills",
       "sourceType": "github",
       "skillPath": "skills/pr-feedback/SKILL.md",
-      "computedHash": "cf76b1cb3c4f7bfa2d6970c9e82380c9b7571073d5bed2df846ddcb7d9448fbf"
+      "computedHash": "c6ecf803d98cffe7eb2b5054719ba633317663421a337951aeaa51350155af22"
     }
   }
 }

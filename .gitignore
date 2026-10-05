@@ -4,3 +4,4 @@
 /.codex
 *.tar.gz
 .agents/
+.claude/
