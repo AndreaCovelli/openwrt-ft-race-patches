@@ -19,12 +19,6 @@
       "skillPath": "skills/gh-cli/SKILL.md",
       "computedHash": "3ff614300a9e0aeee0a54dabb8986387018d8e2cf4f7c7fcb9988e50cff7a6f9"
     },
-    "git-commit": {
-      "source": "AndreaCovelli/my-skills",
-      "sourceType": "github",
-      "skillPath": "skills/git-commit/SKILL.md",
-      "computedHash": "80981eef4b4752c80f47bff2d944f0f4fe82acf2b336bceb31b01c3611ceca73"
-    },
     "github-actions-docs": {
       "source": "AndreaCovelli/my-skills",
       "sourceType": "github",
@@ -42,12 +36,6 @@
       "sourceType": "github",
       "skillPath": "skills/pr-feedback/SKILL.md",
       "computedHash": "cf76b1cb3c4f7bfa2d6970c9e82380c9b7571073d5bed2df846ddcb7d9448fbf"
-    },
-    "write-tests": {
-      "source": "AndreaCovelli/my-skills",
-      "sourceType": "github",
-      "skillPath": "skills/write-tests/SKILL.md",
-      "computedHash": "bf25a3be50a00583759c16c6e0dff429cc07b9b343caf124547ee4a73c9e53b9"
     }
   }
 }
