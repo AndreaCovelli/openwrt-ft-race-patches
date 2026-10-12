@@ -163,8 +163,6 @@ Device lock inputs in this repo:
 - `locks/build-wr3000e.lock`
 - `locks/build-wr3000p.lock`
 - `locks/build-wr3000e-main.lock` for a main-branch compile check only
-- `locks/build.lock` is a compatibility symlink to `build-wr3000e.lock`, so it
-  always uses the same pins and device baseline.
 
 Example device metadata in this repo:
 - `devices/wr3000/diffconfig`
