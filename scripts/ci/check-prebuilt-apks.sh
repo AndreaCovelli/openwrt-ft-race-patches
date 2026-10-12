@@ -55,7 +55,15 @@ while [[ $# -gt 0 ]]; do
   printf 'arg=%s\n' "$1" >>"$log_file"
   case "$1" in
     -H)
-      headers+=("$2")
+      if [[ "$2" == '@-' ]]; then
+        while IFS= read -r header; do
+          [[ -z "$header" ]] && continue
+          printf 'stdin-header=%s\n' "$header" >>"$log_file"
+          headers+=("$header")
+        done
+      else
+        headers+=("$2")
+      fi
       shift 2
       ;;
     -o)
@@ -152,7 +160,8 @@ export FAKE_GH_TOKEN_MODE='empty'
 export GITHUB_TOKEN='env-token'
 rm -f "$dl_dir/usteer.apk"
 prebuilt_apk_download_one "$dl_dir" "$entry"
-assert_contains "$FAKE_CURL_LOG" 'Authorization: Bearer env-token'
+assert_contains "$FAKE_CURL_LOG" 'stdin-header=Authorization: Bearer env-token'
+assert_not_contains "$FAKE_CURL_LOG" 'arg=Authorization'
 
 : >"$FAKE_CURL_LOG"
 export FAKE_GH_TOKEN_MODE='token'
@@ -160,15 +169,16 @@ export FAKE_GH_TOKEN='gh-token'
 export GITHUB_TOKEN='env-token'
 rm -f "$dl_dir/usteer.apk"
 prebuilt_apk_download_one "$dl_dir" "$entry"
-assert_contains "$FAKE_CURL_LOG" 'Authorization: Bearer gh-token'
+assert_contains "$FAKE_CURL_LOG" 'stdin-header=Authorization: Bearer gh-token'
 assert_not_contains "$FAKE_CURL_LOG" 'Authorization: Bearer env-token'
+assert_not_contains "$FAKE_CURL_LOG" 'arg=Authorization'
 
 # Exercise the orchestrator with gh available only on the original host PATH.
 # SSH functions consume scripts without executing them; SCP stops before upload.
 fixture="$tmp_root/repo"
 mkdir -p "$fixture/scripts/lib" "$fixture/locks"
 cp "$repo_root/scripts/orchestrate-ec2-build.sh" "$fixture/scripts/"
-cp "$repo_root/scripts/lib/"{build-name,prebuilt-apks}.sh "$fixture/scripts/lib/"
+cp "$repo_root/scripts/lib/"{build-name,builder-image,prebuilt-apks}.sh "$fixture/scripts/lib/"
 printf "PREBUILT_APKS=('%s')\n" "$entry" >"$fixture/locks/test.lock"
 git -C "$fixture" init -q
 git -C "$fixture" add scripts locks

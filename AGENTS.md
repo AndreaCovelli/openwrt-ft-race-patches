@@ -15,8 +15,6 @@ builds or router upgrades unless the user explicitly asks.
   behavior descriptions in sync with script changes.
 - `patches/subsys/400-mac80211-defer-ap-side-ft-key-upload.patch` is copied into
   OpenWrt at `package/kernel/mac80211/patches/subsys/`.
-- `patches/hostapd/022-hostapd-ft-readd-unassociated-sta-before-ptk.patch` is
-  copied into OpenWrt at `package/network/services/hostapd/patches/`.
 - `locks/*.lock` pin OpenWrt, feeds, patch checksums, device metadata paths, and
   artifact naming fields. They are Bash files and are sourced by scripts.
 - `devices/<name>/` contains the reference `diffconfig`, installed manifest, and
@@ -47,6 +45,7 @@ shellcheck --severity=warning -x scripts/*.sh scripts/**/*.sh
 shellcheck --severity=warning --shell=bash --exclude=SC2034 locks/*.lock
 scripts/ci/check-locks.sh
 scripts/ci/check-build-names.sh
+scripts/ci/check-builder-image.sh
 scripts/ci/check-prepare-openwrt-upgrade.sh
 scripts/ci/check-upgrade-router-image.sh
 scripts/ci/check-prebuilt-apks.sh
@@ -54,7 +53,13 @@ scripts/ci/check-run-local-docker-build.sh
 scripts/ci/check-incremental-build.sh
 scripts/ci/check-world-config.sh
 scripts/ci/check-ec2-cleanup.sh
+scripts/ci/check-ec2-fetch.sh
+hadolint docker/Dockerfile.ec2
 ```
+
+The default builder image lives only in `scripts/lib/builder-image.sh`; keep the
+README reference identical. `scripts/ci/check-builder-image.sh` enforces this
+and requires digest pins for it and the Dockerfile base image.
 
 CI also runs a Markdown link check over `README.md` and `docs/**/*.md` with
 Lychee. If you add external links, expect that check to run in GitHub Actions.
@@ -87,13 +92,15 @@ Do not run those full build or EC2 commands unless the user asked for them.
 
 - When editing the mac80211 patch, update `PATCH_SHA256` in every affected
   `locks/*.lock` file. Verify with `scripts/ci/check-locks.sh`.
-- When editing extra package patches such as the hostapd patch, update the
-  matching `EXTRA_PATCH_SHA256S` entry in every affected `locks/*.lock` file.
-  Verify with `scripts/ci/check-locks.sh`.
+- If a lock pins additional mac80211 patches through `EXTRA_PATCH_SOURCES`,
+  update the matching `EXTRA_PATCH_SHA256S` entry when editing one. Verify with
+  `scripts/ci/check-locks.sh`.
 - Keep `PATCH_SOURCE` and `PATCH_DEST` basenames identical. `PATCH_DEST` must
   remain under `package/kernel/mac80211/patches/subsys/`.
 - Keep `EXTRA_PATCH_SOURCES` and `EXTRA_PATCH_DESTS` arrays aligned by index,
   with matching basenames and matching `EXTRA_PATCH_SHA256S` entries.
+  `EXTRA_PATCH_DESTS` must also stay under
+  `package/kernel/mac80211/patches/subsys/`.
 - Feed refs and `OPENWRT_REF` values must be full 40-character lowercase commit
   hashes.
 - `OPENWRT_TAG` is optional for main-branch compile-check locks, but stable

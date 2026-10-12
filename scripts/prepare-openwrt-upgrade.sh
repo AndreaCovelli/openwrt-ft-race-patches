@@ -23,10 +23,15 @@ Options:
                      https://sysupgrade.openwrt.org.
   --dry-run          Print planned changes and build command without writing
                      files or starting a build.
+  --allow-prebuilt-apk-mismatch
+                     Continue when a PREBUILT_APKS filename names the lock's
+                     current release but not the selected release.
   --help             Show this message.
 
 The command prepares a patched repo-built upgrade image using ASU metadata for
 release discovery. It does not copy the image to the router or run sysupgrade.
+Prebuilt APKs are compiled against one OpenWrt SDK, so a release change
+normally needs a matching new usteer-apk-builder release first.
 EOF
 }
 
@@ -369,6 +374,30 @@ write_apk_installed_and_world() {
   } >"$output"
 }
 
+lock_prebuilt_apk_files() {
+  local lock_file="$1"
+
+  # Lock files are literal Bash assignments; source one in a child shell.
+  bash -c '
+    set -euo pipefail
+    source "$1"
+    if declare -p PREBUILT_APKS >/dev/null 2>&1; then
+      for entry in "${PREBUILT_APKS[@]}"; do
+        IFS="|" read -r _ file _ _ <<<"$entry"
+        printf "%s\n" "$file"
+      done
+    fi
+  ' _ "$lock_file"
+}
+
+filename_names_release() {
+  local file="$1"
+  local release="$2"
+  local pattern="${release//./\\.}"
+
+  [[ "$file" =~ (^|[^0-9])${pattern}([^0-9]|$) ]]
+}
+
 print_lock_plan() {
   local lock_file="$1"
   local openwrt_tag="$2"
@@ -392,6 +421,7 @@ print_lock_plan() {
 TARGET_VERSION=''
 ASU_SERVER=''
 DRY_RUN='0'
+ALLOW_PREBUILT_APK_MISMATCH='0'
 RUN_ARGS=()
 POSITIONAL=()
 
@@ -409,6 +439,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --dry-run)
       DRY_RUN='1'
+      shift
+      ;;
+    --allow-prebuilt-apk-mismatch)
+      ALLOW_PREBUILT_APK_MISMATCH='1'
       shift
       ;;
     --help|-h)
@@ -580,6 +614,29 @@ printf 'ASU server: %s\n' "$ASU_SERVER"
 printf 'Target/profile: %s %s\n' "$EXPECTED_TARGET" "$DEVICE_ID"
 printf 'Router board: %s\n' "$ROUTER_BOARD"
 printf 'Feed branch: %s\n' "$FEED_BRANCH"
+
+LOCK_RELEASE="${OPENWRT_TAG#v}"
+if [[ "$LOCK_RELEASE" != "$TARGET_VERSION" ]]; then
+  stale_prebuilt_apks=()
+  while IFS= read -r prebuilt_file; do
+    if filename_names_release "$prebuilt_file" "$LOCK_RELEASE" &&
+      ! filename_names_release "$prebuilt_file" "$TARGET_VERSION"; then
+      stale_prebuilt_apks+=("$prebuilt_file")
+    fi
+  done < <(lock_prebuilt_apk_files "$LOCK_FILE_ABS")
+  if ((${#stale_prebuilt_apks[@]} > 0)); then
+    for prebuilt_file in "${stale_prebuilt_apks[@]}"; do
+      printf 'Prebuilt APK built for %s, not %s: %s\n' "$LOCK_RELEASE" "$TARGET_VERSION" "$prebuilt_file" >&2
+    done
+    if [[ "$DRY_RUN" == '1' ]]; then
+      printf 'Warning: publish matching prebuilt APKs and update PREBUILT_APKS before a real run.\n' >&2
+    elif [[ "$ALLOW_PREBUILT_APK_MISMATCH" == '1' ]]; then
+      log "Continuing with mismatched prebuilt APKs; --allow-prebuilt-apk-mismatch was given"
+    else
+      die "PREBUILT_APKS targets $LOCK_RELEASE; publish matching APKs or pass --allow-prebuilt-apk-mismatch"
+    fi
+  fi
+fi
 
 if [[ "$DRY_RUN" == '1' ]]; then
   print_lock_plan "$LOCK_FILE_ABS" "$OPENWRT_TAG_NEW" "$OPENWRT_REF_NEW" "$FEED_PACKAGES_REF_NEW" "$FEED_LUCI_REF_NEW" "$FEED_ROUTING_REF_NEW" "$FEED_TELEPHONY_REF_NEW" "$FEED_VIDEO_REF_NEW"

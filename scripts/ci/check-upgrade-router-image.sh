@@ -85,7 +85,15 @@ ROUTER
           -b)
             dest="$(remote_path "$3")"
             mkdir -p "$(dirname "$dest")"
-            printf 'backup\n' >"$dest"
+            if [[ "${TEST_BAD_BACKUP:-0}" == '1' ]]; then
+              printf 'not an archive\n' >"$dest"
+            else
+              backup_src="$(mktemp -d)"
+              mkdir -p "$backup_src/etc/config"
+              printf 'config system\n' >"$backup_src/etc/config/system"
+              tar -czf "$dest" -C "$backup_src" etc
+              rm -rf "$backup_src"
+            fi
             ;;
           -T)
             [[ -f "$(remote_path "$3")" ]] || exit 1
@@ -188,7 +196,9 @@ export TEST_SSH_LOG="$tmp_root/ssh.log"
 export TEST_SCP_LOG="$tmp_root/scp.log"
 export TEST_FLASH_LOG="$tmp_root/flash.log"
 
-image="$tmp_root/test-sysupgrade.bin"
+image_dir="$tmp_root/image"
+mkdir -p "$image_dir"
+image="$image_dir/test-sysupgrade.bin"
 printf 'firmware-image\n' >"$image"
 
 run_script() {
@@ -198,11 +208,43 @@ run_script() {
 : >"$TEST_SSH_LOG"
 : >"$TEST_SCP_LOG"
 : >"$TEST_FLASH_LOG"
-run_script --no-flash router "$image"
+run_script --no-flash router "$image" >"$tmp_root/no-sums.log"
 assert_file_exists "$tmp_root/backups/router-"*
 assert_file_not_exists "$tmp_root/remote/tmp/test-sysupgrade.bin"
 assert_file_contains "$TEST_SSH_LOG" 'sysupgrade -T'
+assert_file_contains "$tmp_root/no-sums.log" 'no sha256sums.txt next to the image'
 [[ ! -s "$TEST_FLASH_LOG" ]] || die 'no-flash unexpectedly flashed'
+
+(cd "$image_dir" && sha256sum test-sysupgrade.bin >sha256sums.txt)
+run_script --no-flash router "$image" >"$tmp_root/sums.log"
+assert_file_contains "$tmp_root/sums.log" 'Local image matches'
+
+printf '%064d  test-sysupgrade.bin\n' 0 >"$image_dir/sha256sums.txt"
+: >"$TEST_SSH_LOG"
+if run_script --no-flash router "$image" >/dev/null 2>&1; then
+  die 'image differing from sha256sums.txt unexpectedly succeeded'
+fi
+if grep -Fq 'sysupgrade -b' "$TEST_SSH_LOG"; then
+  die 'sha256sums.txt mismatch was detected after contacting the router'
+fi
+
+printf '%064d  other-sysupgrade.bin\n' 0 >"$image_dir/sha256sums.txt"
+if run_script --no-flash router "$image" >/dev/null 2>&1; then
+  die 'sha256sums.txt without an image entry unexpectedly succeeded'
+fi
+rm -f "$image_dir/sha256sums.txt"
+
+: >"$TEST_SSH_LOG"
+if TEST_BAD_BACKUP=1 run_script --no-flash router "$image" >/dev/null 2>&1; then
+  die 'unreadable backup archive unexpectedly succeeded'
+fi
+if ! find "$tmp_root/remote/tmp" -name '*sysupgrade-backup.tar.gz' -print -quit | grep -q .; then
+  die 'remote backup was removed although the local copy was unreadable'
+fi
+if grep -Fq 'sysupgrade -T' "$TEST_SSH_LOG"; then
+  die 'unreadable backup did not stop the upgrade preflight'
+fi
+rm -f "$tmp_root/remote/tmp/"*sysupgrade-backup.tar.gz
 
 : >"$TEST_SSH_LOG"
 : >"$TEST_SCP_LOG"

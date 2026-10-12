@@ -115,6 +115,14 @@ mode itself.
 If the router already runs the selected release, the script refreshes the
 package baseline and exits without starting a build.
 
+Locks with `PREBUILT_APKS`, such as the WR3000P lock and its patched `usteer`,
+need APKs built against the new release. When an APK filename names the lock's
+current release but not the selected one, the script stops before changing any
+file. Publish a matching `usteer-apk-builder` release, update the lock and the
+local feed `PKG_SOURCE` and `PKG_HASH`, then rerun. A dry run reports the
+mismatch as a warning, and `--allow-prebuilt-apk-mismatch` deliberately keeps
+the old APK.
+
 During the build, captured world packages are added to the device configuration
 using the pinned OpenWrt package metadata, including the mapping from ABI-suffixed
 APK names to Kconfig symbols. A newly installed package such as `htop` is selected
