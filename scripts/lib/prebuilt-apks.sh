@@ -48,6 +48,7 @@ prebuilt_apk_download_one() {
   local dl_dir="$1"
   local entry="$2"
   local name file url sha256 dest tmp_dest token
+  local auth_header=''
   local -a curl_args=()
 
   prebuilt_apk_parse_entry "$entry" name file url sha256
@@ -74,11 +75,13 @@ prebuilt_apk_download_one() {
     )
     token="$(prebuilt_apk_download_token)"
     if [[ -n "$token" ]]; then
-      curl_args+=(-H "Authorization: Bearer $token")
+      # Read the header from stdin so the token stays out of the process list.
+      auth_header="Authorization: Bearer $token"
+      curl_args+=(-H @-)
     fi
   fi
 
-  if ! curl -fsSL \
+  if ! printf '%s\n' "$auth_header" | curl -fsSL \
     --proto '=https' \
     --proto-redir '=https' \
     --connect-timeout 10 \

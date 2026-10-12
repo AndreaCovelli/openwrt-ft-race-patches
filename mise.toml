@@ -3,11 +3,12 @@ lockfile = true
 
 [tools]
 actionlint = "1.7.12"
+hadolint = "2.15.1"
 lychee = "0.24.2"
 shellcheck = "0.11.0"
 
 [tasks."check:shell"]
-description = "Validate shell scripts and the GitHub Actions workflow"
+description = "Validate shell scripts, the builder Dockerfile, and the GitHub Actions workflow"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
@@ -30,6 +31,8 @@ scripts/ci/check-run-local-docker-build.sh
 scripts/ci/check-incremental-build.sh
 scripts/ci/check-world-config.sh
 scripts/ci/check-ec2-cleanup.sh
+scripts/ci/check-ec2-fetch.sh
+hadolint docker/Dockerfile.ec2
 actionlint .github/workflows/ci.yml
 '''
 
@@ -38,6 +41,7 @@ description = "Validate lock files, patches, and build artifact names"
 run = [
   "scripts/ci/check-locks.sh",
   "scripts/ci/check-build-names.sh",
+  "scripts/ci/check-builder-image.sh",
 ]
 
 [tasks."check:links"]

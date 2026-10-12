@@ -1,10 +1,7 @@
 Patch bundle for the OpenWrt `hostapd: nl80211: kernel reports: key addition failed` FT race.
 
-It contains:
-- `patches/subsys/400-mac80211-defer-ap-side-ft-key-upload.patch`, installed
-  into `package/kernel/mac80211/patches/subsys/`
-- `patches/hostapd/022-hostapd-ft-readd-unassociated-sta-before-ptk.patch`,
-  installed into `package/network/services/hostapd/patches/`
+It contains `patches/subsys/400-mac80211-defer-ap-side-ft-key-upload.patch`,
+installed into `package/kernel/mac80211/patches/subsys/`.
 
 This repo also contains a generic reproducible OpenWrt builder plus example
 device inputs.
@@ -31,7 +28,8 @@ Development checks:
 - Install the checksum-locked tools with `mise install`.
 - Run the complete local validation suite with `mise run check`.
 - Run an individual group with `mise run check:shell`,
-  `mise run check:metadata`, or `mise run check:links`.
+  `mise run check:metadata`, or `mise run check:links`. The shell group also
+  lints `docker/Dockerfile.ec2` with hadolint.
 
 Build verification:
 - Builds fail by default if the generated package manifest differs from the
@@ -98,6 +96,11 @@ ASU-like latest release preparation:
   paths, and EC2 build command without writing files or starting a build. Use
   `--version 25.12.4` to prepare a specific release instead of the latest
   same-branch ASU release.
+- `PREBUILT_APKS` are compiled against one OpenWrt release. When a filename
+  names the lock's current release but not the selected one, a real run stops
+  before changing files; publish a matching `usteer-apk-builder` release and
+  update the lock first. `--dry-run` only warns, and
+  `--allow-prebuilt-apk-mismatch` deliberately keeps the old APK.
 - Set `BUILD_SCRIPT=/path/to/build-wrapper` to delegate to a different
   compatible build wrapper. It must accept `--no-strict-manifest` and the lock
   file path.
@@ -135,10 +138,9 @@ sha256sum "$PATCH"
 
 - Copy the printed SHA-256 into `PATCH_SHA256` in the relevant `locks/*.lock`,
   then run `./scripts/orchestrate-ec2-build.sh <ssh-target> locks/<device>.lock`.
-- For the hostapd patch, use the same pattern with
-  `package/network/services/hostapd/patches/` and `make
-  package/network/services/hostapd/{clean,refresh} V=99`, then copy the printed
-  SHA-256 into the matching `EXTRA_PATCH_SHA256S` entry in each affected lock.
+- `scripts/ci/check-locks.sh` also requires every local feed package that
+  repackages an APK to name the same `PKG_SOURCE` and `PKG_HASH` as the lock's
+  `PREBUILT_APKS` entry.
 
 What it fixes:
 - The mac80211 patch follows wireless-next v4 (source commit
@@ -155,10 +157,6 @@ What it fixes:
   are computed locally and published with `WRITE_ONCE()` so RX/TX readers
   cannot observe a temporary cleared state. Keys remain usable through
   software crypto if hardware upload fails.
-- `hostapd` re-adds an unassociated kernel STA before the first FT PTK install
-  when userspace still has a STA entry but the kernel entry was removed after
-  disassociation. This covers the FT-over-DS/WDS error path where key install
-  and `NL80211_ATTR_STA_VLAN` reassignment both need a kernel STA.
 
 Device lock inputs in this repo:
 - `locks/build-wr3000.lock`
@@ -197,17 +195,28 @@ Local Docker builds:
 - `--fresh` safely replaces only the selected workspace and performs a full
   build. Use `--workspace <name>` when one device needs multiple independent
   build trees.
-- Patch checksum changes automatically clean and compile the affected
-  `mac80211` or `hostapd` package before the normal incremental image build.
+- A full build records its prepared state once the checkout, feeds, patches,
+  and final `.config` are in place. If that first build fails later, the next
+  run resumes it (`build_mode=resume`) instead of requiring `--fresh`.
+- Patch checksum changes automatically clean and compile the `mac80211`
+  package before the normal incremental image build.
   Identical patches keep their existing timestamps so OpenWrt preparation
-  stamps remain valid for packages that have not changed.
-  Use repeatable `--rebuild-package mac80211`, `--rebuild-package hostapd`, or
-  `--rebuild-package all` to force those steps without changing a patch.
+  stamps remain valid for packages that have not changed. Local feed content or
+  `PREBUILT_APKS` changes likewise rebuild the packages in
+  `LOCAL_FEED_INSTALLS`.
+  Use repeatable `--rebuild-package mac80211`,
+  `--rebuild-package local-feeds`, or `--rebuild-package all` to force those
+  steps without changing an input.
 - Reuse is refused when pinned repositories, feeds, target/config baselines,
-  patch topology, local feeds, prebuilt APKs, ccache mode, platform, or builder
-  image identity differs. The diagnostic lists the changed keys; rerun with
+  patch topology, local feed names and paths, ccache mode, platform, or builder
+  image identity differs. Reference manifest and world inputs are compared after
+  each build instead. The diagnostic lists the changed keys; rerun with
   `--fresh` only after confirming the replacement is intended. Workspaces
-  created by older versions of the builder also require one fresh build.
+  created by older versions of the builder, including every workspace from
+  before state schema 2, require one fresh build.
+- Builds enable OpenWrt's `CONFIG_BUILD_LOG`, so each package's compiler output
+  is copied to `logs/openwrt/` in the artifact directory, including after a
+  failure.
 - The wrapper mounts the repo-local `cache/` directory at `/cache`. OpenWrt
   source downloads use `/cache/dl`, so repeated local builds reuse the same
   download cache instead of writing downloads under the per-build tree.
@@ -216,7 +225,19 @@ Local Docker builds:
   `CCACHE_MAXSIZE` of `20G`. Use `--ccache-maxsize <size>` to override the
   limit or `--no-ccache` for a cache-free workspace (an existing workspace
   with the other ccache mode must be replaced with `--fresh`).
-- Use `--no-pull --builder-image <local-tag>` when testing a locally rebuilt
+- The builder keys ccache on the OpenWrt commit, builder image, and toolchain
+  configuration rather than compiler timestamps, and ignores the workspace
+  path. A fresh workspace rebuilds its cross-compiler, so the default mtime
+  check would otherwise miss every cached object. Target objects that embed
+  absolute paths through OpenWrt's prefix maps still differ between
+  workspaces, so most reuse comes from rebuilding the same workspace.
+- The container runs as the invoking user's UID and GID, so the workspace,
+  cache, and artifacts stay owned by that user. UIDs other than the image's
+  UID 1000 get `HOME=/tmp` inside the container.
+- The default builder image is `DEFAULT_BUILDER_IMAGE` in
+  `scripts/lib/builder-image.sh`. A digest-pinned image that is already
+  present locally is not pulled again. Use
+  `--no-pull --builder-image <local-tag>` when testing a locally rebuilt
   builder image that has not been pushed to a registry.
 - When a lock uses private `PREBUILT_APKS`, the wrapper downloads and verifies
   those APKs on the host using `gh auth token` or `GITHUB_TOKEN`, then stores
@@ -245,6 +266,23 @@ EC2 orchestration:
   and terminates/deletes the temporary EC2 resources on exit. By default it
   uses a `c8a.xlarge` instance and a 30 GiB gp3 root volume; set `--key-name`
   and `--key-file` when the defaults do not match your AWS account.
+- The wrapper requests a one-time spot instance by default and falls back to
+  on-demand, with the spot error logged, when capacity is unavailable. A spot
+  reclaim ends that run; the wrapper names the cause, and `--on-demand` avoids
+  it for builds that must not be interrupted.
+- Boot-time user data arms `shutdown -h +360`, which terminates the instance
+  after six hours even if the local machine loses its connection before
+  cleanup. Adjust with `--max-runtime-minutes <n>` or disable with `0`. The
+  limit also applies with `--keep-instance`.
+- The same user data installs `tmux`, Docker, and Buildx while SSH comes up,
+  and the wrapper polls SSH directly instead of waiting for EC2 status checks.
+  The orchestrator waits for cloud-init before checking prerequisites.
+- The temporary SSH config uses a per-run `known_hosts` file, keepalives, and
+  one multiplexed connection for all polls and copies. Build polling tolerates
+  about 10 minutes of consecutive SSH failures before giving up with a
+  reattach command.
+- The artifact directory must not exist yet; the wrapper checks before
+  creating any AWS resource.
 - Cleanup retries failed termination, termination waits, and security group
   deletion up to three times. Persistent failures report the AWS diagnostics,
   resource IDs, and region for manual cleanup, and make an otherwise successful
@@ -283,9 +321,10 @@ EC2 orchestration:
   enough; use 40 GiB for extra margin, or more only if reusing the instance or
   keeping multiple build runs.
 - To automatically copy the finished images back to the local machine, pass
-  `--fetch-artifacts <local-dir>`. This waits for the remote `tmux` build to
-  finish, then copies the remote `output/` contents and logs to the local
-  directory.
+  `--fetch-artifacts <local-dir>` naming a directory that does not exist yet.
+  This waits for the remote `tmux` build to finish, copies the remote
+  `output/` contents and logs into a staging directory, verifies
+  `sha256sums.txt`, and only then moves the staging directory into place.
   If the image build produced `output/` and then failed during strict manifest
   verification, artifacts, logs, and `reports/` are still copied before the
   script returns the remote failure status. The outer EC2 build log is saved as
@@ -306,6 +345,10 @@ Flashing the fetched image:
   `sysupgrade -b`, copies the matching `*sysupgrade.bin` image to `/tmp/`,
   verifies the remote SHA-256 against the local image, and runs
   `sysupgrade -T`.
+- When `sha256sums.txt` sits next to the image, as in fetched artifact
+  directories, the image must match its entry before the router is contacted.
+  The local backup must be a readable gzip tar archive before the router-side
+  copy is removed; otherwise the helper stops and keeps the router copy.
 - To run the same preflight and then flash after an interactive confirmation:
   `./scripts/upgrade-router-image.sh wr3000p ./openwrt-artifacts/<build>/<image-sysupgrade.bin>`
 - To skip the prompt in an already-confirmed maintenance window:

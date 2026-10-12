@@ -1,5 +1,8 @@
-ARG BUILDER_BASE_IMAGE=ubuntu:noble-20260410
+# The digest is the Docker Hub multi-platform index for ubuntu:noble-20260410.
+ARG BUILDER_BASE_IMAGE=ubuntu:noble-20260410@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b
 FROM ${BUILDER_BASE_IMAGE}
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 ENV DEBIAN_FRONTEND=noninteractive
 ARG UBUNTU_SNAPSHOT=20260410T000000Z

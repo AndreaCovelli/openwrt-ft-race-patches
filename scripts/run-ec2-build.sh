@@ -28,8 +28,8 @@ Options:
                             in an AZ offering the selected instance type.
   --session NAME            Build/session name. Default:
                             openwrt-ft-<device-id>-<openwrt-version>-<variant>-<utc>.
-  --artifact-dir DIR        Local artifact output. Default:
-                            ./openwrt-artifacts/<session>.
+  --artifact-dir DIR        New local artifact output (must not exist).
+                            Default: ./openwrt-artifacts/<session>.
   --builder-image REF       Prebuilt Docker builder image passed through.
   --rebuild-builder-image   Build docker/Dockerfile.ec2 on the remote host
                             instead of pulling the prebuilt builder image.
@@ -42,13 +42,21 @@ Options:
   --builder-base-image REF  Docker base image override.
   --ubuntu-snapshot TS      Ubuntu apt snapshot override.
   --remote-root PATH        Remote workspace root.
+  --on-demand               Launch an on-demand instance. Default: request a
+                            one-time spot instance and fall back to on-demand
+                            when spot capacity is unavailable.
+  --max-runtime-minutes N   Shut down, and so terminate, the instance N
+                            minutes after boot even if this client disappears.
+                            Applies with --keep-instance too. 0 disables.
+                            Default: 360.
   --keep-instance           Do not terminate/delete EC2 resources on exit.
   --help                    Show this message.
 
 The script creates a temporary SSH-only security group restricted to this
 client's public IP, launches the builder, runs the existing orchestrator through
 a temporary SSH config file, then terminates the instance and deletes the
-security group unless --keep-instance is set.
+security group unless --keep-instance is set. Boot-time user data installs tmux
+and Docker while SSH comes up and arms the maximum-runtime shutdown.
 EOF
 }
 
@@ -102,6 +110,8 @@ BUILDER_BASE_IMAGE=''
 UBUNTU_SNAPSHOT=''
 REMOTE_ROOT=''
 KEEP_INSTANCE='0'
+MARKET_TYPE='spot'
+MAX_RUNTIME_MINUTES='360'
 
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
@@ -211,6 +221,15 @@ while [[ $# -gt 0 ]]; do
       KEEP_INSTANCE='1'
       shift
       ;;
+    --on-demand)
+      MARKET_TYPE='on-demand'
+      shift
+      ;;
+    --max-runtime-minutes)
+      [[ $# -ge 2 ]] || die "--max-runtime-minutes requires a value"
+      MAX_RUNTIME_MINUTES="$2"
+      shift 2
+      ;;
     --help|-h)
       usage
       exit 0
@@ -254,6 +273,10 @@ case "$VOLUME_SIZE" in
   ''|*[!0-9]*) die "--volume-size must be an integer GiB value" ;;
 esac
 
+case "$MAX_RUNTIME_MINUTES" in
+  ''|*[!0-9]*) die "--max-runtime-minutes must be a non-negative integer" ;;
+esac
+
 LOCK_FILE_REL="${LOCK_FILE#"$REPO_ROOT"/}"
 
 if [[ -z "$SESSION_NAME" ]]; then
@@ -262,12 +285,16 @@ fi
 if [[ -z "$ARTIFACT_DIR" ]]; then
   ARTIFACT_DIR="$REPO_ROOT/openwrt-artifacts/$SESSION_NAME"
 fi
+ARTIFACT_DIR="$(abs_repo_path "$ARTIFACT_DIR")"
+# Fail before paying for an instance whose artifacts could not be published.
+[[ ! -e "$ARTIFACT_DIR" && ! -L "$ARTIFACT_DIR" ]] ||
+  die "artifact directory already exists: $ARTIFACT_DIR"
 if [[ -z "$KEY_FILE" ]]; then
   KEY_FILE="$HOME/.ssh/${KEY_NAME}.pem"
 fi
 [[ -f "$KEY_FILE" ]] || die "private key file not found: $KEY_FILE"
 
-require_cmd aws curl date mktemp ssh
+require_cmd aws curl date mktemp seq ssh
 
 AWS_CMD=(aws)
 if [[ -n "$AWS_REGION" ]]; then
@@ -276,7 +303,12 @@ fi
 
 SECURITY_GROUP_ID=''
 INSTANCE_ID=''
-SSH_CONFIG_FILE=''
+INSTANCE_MARKET=''
+SSH_HOST_ALIAS='openwrt-ft-ec2-builder'
+# Holds the SSH config, per-run known_hosts, control socket, and user data.
+RUN_TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/openwrt-ft-ec2.XXXXXXXX")"
+SSH_CONFIG_FILE="$RUN_TMP_DIR/ssh_config"
+USER_DATA_FILE="$RUN_TMP_DIR/user-data.sh"
 
 retry_ec2_cleanup() {
   local attempt
@@ -297,6 +329,10 @@ cleanup() {
   local cleanup_failed=0
   trap - EXIT
   set +e
+
+  if [[ -f "$SSH_CONFIG_FILE" ]]; then
+    ssh -F "$SSH_CONFIG_FILE" -O exit "$SSH_HOST_ALIAS" >/dev/null 2>&1
+  fi
 
   if [[ "$KEEP_INSTANCE" == '1' ]]; then
     if [[ -n "$INSTANCE_ID" ]]; then
@@ -327,9 +363,7 @@ cleanup() {
     fi
   fi
 
-  if [[ -n "$SSH_CONFIG_FILE" ]]; then
-    rm -f "$SSH_CONFIG_FILE"
-  fi
+  rm -rf -- "$RUN_TMP_DIR"
 
   exit "$status"
 }
@@ -405,19 +439,61 @@ aws_ec2 authorize-security-group-ingress \
   --ip-permissions "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=${CLIENT_IP}/32,Description=builder-ssh}]" \
   >/dev/null
 
-INSTANCE_ID="$(aws_ec2 run-instances \
-  --image-id "$AMI_ID" \
-  --instance-type "$INSTANCE_TYPE" \
-  --key-name "$KEY_NAME" \
-  --subnet-id "$SUBNET_ID" \
-  --security-group-ids "$SECURITY_GROUP_ID" \
-  --block-device-mappings "DeviceName=${ROOT_DEVICE},Ebs={VolumeSize=${VOLUME_SIZE},VolumeType=gp3,DeleteOnTermination=true}" \
-  --instance-initiated-shutdown-behavior terminate \
-  --metadata-options HttpTokens=required,HttpEndpoint=enabled \
-  --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$RUN_NAME},{Key=Purpose,Value=openwrt-ft-build}]" "ResourceType=volume,Tags=[{Key=Name,Value=$RUN_NAME-root},{Key=Purpose,Value=openwrt-ft-build}]" \
-  --query 'Instances[0].InstanceId' \
-  --output text)"
-log "Launched EC2 builder: $INSTANCE_ID"
+{
+  printf '#!/bin/bash\n'
+  printf '# Generated by run-ec2-build.sh for %s.\n' "$RUN_NAME"
+  if ((MAX_RUNTIME_MINUTES > 0)); then
+    # The instance shuts down into termination, so this bounds cost even if
+    # the client loses its connection before cleanup runs.
+    printf "shutdown -h +%s 'openwrt-ft builder maximum runtime reached'\n" "$MAX_RUNTIME_MINUTES"
+  fi
+  cat <<'USERDATA'
+export DEBIAN_FRONTEND=noninteractive
+if apt-get update; then
+  apt-get install -y tmux docker.io || true
+  apt-get install -y docker-buildx || true
+fi
+systemctl enable --now docker || true
+USERDATA
+} >"$USER_DATA_FILE"
+
+# AWS shorthand values contain commas inside single arguments.
+# shellcheck disable=SC2054
+run_instance_args=(
+  --image-id "$AMI_ID"
+  --instance-type "$INSTANCE_TYPE"
+  --key-name "$KEY_NAME"
+  --subnet-id "$SUBNET_ID"
+  --security-group-ids "$SECURITY_GROUP_ID"
+  --block-device-mappings "DeviceName=${ROOT_DEVICE},Ebs={VolumeSize=${VOLUME_SIZE},VolumeType=gp3,DeleteOnTermination=true}"
+  --instance-initiated-shutdown-behavior terminate
+  --metadata-options HttpTokens=required,HttpEndpoint=enabled
+  --user-data "file://$USER_DATA_FILE"
+  --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$RUN_NAME},{Key=Purpose,Value=openwrt-ft-build}]" "ResourceType=volume,Tags=[{Key=Name,Value=$RUN_NAME-root},{Key=Purpose,Value=openwrt-ft-build}]"
+  --query 'Instances[0].InstanceId'
+  --output text
+)
+
+if [[ "$MARKET_TYPE" == 'spot' ]]; then
+  log "Requesting spot EC2 builder: $INSTANCE_TYPE"
+  spot_error_file="$RUN_TMP_DIR/spot-error"
+  if INSTANCE_ID="$(aws_ec2 run-instances "${run_instance_args[@]}" \
+    --instance-market-options 'MarketType=spot,SpotOptions={SpotInstanceType=one-time,InstanceInterruptionBehavior=terminate}' \
+    2>"$spot_error_file")"; then
+    INSTANCE_MARKET='spot'
+  else
+    INSTANCE_ID=''
+    log "Spot request failed; falling back to on-demand: $(tr '\n' ' ' <"$spot_error_file")"
+  fi
+fi
+if [[ -z "$INSTANCE_ID" ]]; then
+  INSTANCE_ID="$(aws_ec2 run-instances "${run_instance_args[@]}")"
+  INSTANCE_MARKET='on-demand'
+fi
+log "Launched $INSTANCE_MARKET EC2 builder: $INSTANCE_ID"
+if ((MAX_RUNTIME_MINUTES > 0)); then
+  log "Builder terminates itself after $MAX_RUNTIME_MINUTES minutes"
+fi
 
 aws_ec2 wait instance-running --instance-ids "$INSTANCE_ID"
 PUBLIC_IP="$(aws_ec2 describe-instances \
@@ -426,24 +502,30 @@ PUBLIC_IP="$(aws_ec2 describe-instances \
   --output text)"
 [[ "$PUBLIC_IP" != 'None' && -n "$PUBLIC_IP" ]] || die "builder has no public IP"
 
-SSH_CONFIG_FILE="$(mktemp "${TMPDIR:-/tmp}/openwrt-ft-ssh.XXXXXXXX")"
+# A per-run known_hosts keeps recycled EC2 addresses from colliding with old
+# host keys. Keepalives detect dead links; one shared connection avoids a new
+# handshake for every orchestrator poll and copy.
 cat >"$SSH_CONFIG_FILE" <<EOF
-Host openwrt-ft-ec2-builder
+Host $SSH_HOST_ALIAS
     HostName $PUBLIC_IP
     User ubuntu
     IdentityFile $KEY_FILE
     IdentitiesOnly yes
     StrictHostKeyChecking accept-new
+    UserKnownHostsFile $RUN_TMP_DIR/known_hosts
     ConnectTimeout 10
+    ServerAliveInterval 30
+    ServerAliveCountMax 6
+    ControlMaster auto
+    ControlPath $RUN_TMP_DIR/%C
+    ControlPersist 10m
 EOF
 
-log "Waiting for EC2 status checks"
-aws_ec2 wait instance-status-ok --instance-ids "$INSTANCE_ID"
-
+# SSH answers before the slower EC2 status checks pass, so poll SSH directly.
 log "Waiting for SSH on $PUBLIC_IP"
 ssh_ready='0'
-for _ in $(seq 1 60); do
-  if ssh -F "$SSH_CONFIG_FILE" -o BatchMode=yes openwrt-ft-ec2-builder 'true' >/dev/null 2>&1; then
+for _ in $(seq 1 90); do
+  if ssh -F "$SSH_CONFIG_FILE" -o BatchMode=yes "$SSH_HOST_ALIAS" 'true' >/dev/null 2>&1; then
     ssh_ready='1'
     break
   fi
@@ -488,9 +570,24 @@ log "Starting EC2 OpenWrt build"
 set +e
 PATH="$HOST_PATH" SSH_CONFIG_FILE="$SSH_CONFIG_FILE" "$SCRIPT_DIR/orchestrate-ec2-build.sh" \
   "${orchestrator_args[@]}" \
-  openwrt-ft-ec2-builder \
+  "$SSH_HOST_ALIAS" \
   "$LOCK_FILE_REL"
 build_status=$?
 set -e
+
+if ((build_status != 0)); then
+  state_reason="$(aws_ec2 describe-instances \
+    --instance-ids "$INSTANCE_ID" \
+    --query 'Reservations[0].Instances[0].StateReason.Code' \
+    --output text 2>/dev/null || true)"
+  case "$state_reason" in
+    *Spot*)
+      log "EC2 reclaimed the spot builder ($state_reason); rerun, or pass --on-demand"
+      ;;
+    *InstanceInitiatedShutdown*)
+      log "Builder shut itself down ($state_reason); raise --max-runtime-minutes if the build needs longer"
+      ;;
+  esac
+fi
 
 exit "$build_status"

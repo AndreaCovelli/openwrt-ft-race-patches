@@ -12,6 +12,8 @@ REPO_ROOT="$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/build-name.sh"
 # shellcheck source=scripts/lib/prebuilt-apks.sh
 source "$SCRIPT_DIR/lib/prebuilt-apks.sh"
+# shellcheck source=scripts/lib/builder-image.sh
+source "$SCRIPT_DIR/lib/builder-image.sh"
 
 usage() {
   cat <<'EOF'
@@ -27,11 +29,14 @@ Options:
                             ./openwrt-artifacts/<session>.
   --fresh                   Replace the exact workspace and run a full build.
   --rebuild-package NAME    Force an incremental package rebuild. Repeatable;
-                            NAME is mac80211, hostapd, or all.
-  --builder-image REF       Prebuilt Docker builder image. Default matches
-                            scripts/orchestrate-ec2-build.sh.
+                            NAME is mac80211, local-feeds, or all.
+  --builder-image REF       Prebuilt Docker builder image. Default:
+                            DEFAULT_BUILDER_IMAGE in
+                            scripts/lib/builder-image.sh.
   --no-pull                 Use --builder-image as a local image without
                             pulling. Useful for locally rebuilt tags.
+                            Digest-pinned images already present locally are
+                            never pulled again.
   --rebuild-builder-image   Build docker/Dockerfile.ec2 locally instead of
                             pulling the prebuilt builder image.
   --image-tag TAG           Local Docker image tag used with
@@ -93,7 +98,7 @@ abs_repo_path() {
 SESSION_NAME=''
 WORKSPACE_NAME=''
 ARTIFACT_DIR=''
-BUILDER_IMAGE='ghcr.io/andreacovelli/openwrt-ft-race-patches/openwrt-builder:ubuntu-noble-20260410-snapshot-20260410t000000z@sha256:ddd581ad95983400564b019d362b674eb24ecd096ca8cb4fc64cc6f5a86a0ea5'
+BUILDER_IMAGE="$DEFAULT_BUILDER_IMAGE"
 REBUILD_BUILDER_IMAGE='0'
 PULL_BUILDER_IMAGE='1'
 IMAGE_TAG='patch-fix-openwrt-builder'
@@ -135,8 +140,8 @@ while [[ $# -gt 0 ]]; do
     --rebuild-package)
       [[ $# -ge 2 ]] || die "--rebuild-package requires a value"
       case "$2" in
-        mac80211|hostapd|all) ;;
-        *) die "--rebuild-package must be mac80211, hostapd, or all" ;;
+        mac80211|local-feeds|all) ;;
+        *) die "--rebuild-package must be mac80211, local-feeds, or all" ;;
       esac
       REBUILD_PACKAGES+=("$2")
       shift 2
@@ -367,7 +372,12 @@ fi
 case "$REBUILD_BUILDER_IMAGE" in
   0)
     IMAGE_TAG="$BUILDER_IMAGE"
-    if [[ "$PULL_BUILDER_IMAGE" == '1' ]]; then
+    if [[ "$PULL_BUILDER_IMAGE" == '1' ]] &&
+      builder_image_is_digest_pinned "$IMAGE_TAG" &&
+      "$OPENWRT_DOCKER_BIN" image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
+      # A digest names immutable content, so a local copy is already exact.
+      log "Using local digest-pinned Docker builder image: $IMAGE_TAG"
+    elif [[ "$PULL_BUILDER_IMAGE" == '1' ]]; then
       log "Pulling Docker builder image: $IMAGE_TAG"
       "$OPENWRT_DOCKER_BIN" pull "$IMAGE_TAG"
     else
@@ -397,6 +407,9 @@ if ((${#REBUILD_PACKAGES[@]} == 0)); then
 else
   rebuild_packages_value="$(IFS=,; printf '%s' "${REBUILD_PACKAGES[*]}")"
 fi
+# Run as the invoking user so workspace, cache, and artifact files stay owned
+# by them. The image user is UID 1000; other UIDs need a writable HOME.
+docker_user_args=(--user "$(id -u):$(id -g)")
 docker_env=(
   -e CACHE_ROOT=/cache
   -e BUILD_ID="$SESSION_NAME"
@@ -409,6 +422,9 @@ docker_env=(
   -e REBUILD_PACKAGES="$rebuild_packages_value"
   -e OPENWRT_WORKSPACE_LOCK_HELD=1
 )
+if [[ "$(id -u)" != '1000' ]]; then
+  docker_env+=(-e HOME=/tmp)
+fi
 if [[ -n "$MAKE_JOBS" ]]; then
   docker_env+=(-e MAKE_JOBS="$MAKE_JOBS")
 fi
@@ -435,6 +451,7 @@ if ((${#LOCK_PREBUILT_APKS[@]} > 0)); then
 fi
 "$OPENWRT_DOCKER_BIN" run --rm \
   "${docker_platform_args[@]}" \
+  "${docker_user_args[@]}" \
   "${docker_env[@]}" \
   -v "$REPO_ROOT:/workspace" \
   -v "$HOST_CACHE_DIR:/cache" \

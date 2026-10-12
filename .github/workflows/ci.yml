@@ -7,8 +7,11 @@ on:
     paths: &ci_paths
       - .github/dependabot.yml
       - .github/workflows/**
+      - .dockerignore
+      - .hadolint.yaml
       - README.md
       - devices/**
+      - docker/**
       - docs/**
       - local-feeds/**
       - locks/**
@@ -42,8 +45,9 @@ jobs:
       - name: Set up mise
         uses: jdx/mise-action@v5.1.1
         with:
-          version: 2026.7.14
-          install_args: "actionlint shellcheck"
+          # Keep mise compatible with the provenance metadata in mise.lock.
+          version: &mise_version 2026.10.8
+          install_args: "actionlint hadolint shellcheck"
 
       - name: Validate shell scripts and workflow
         env:
@@ -62,7 +66,7 @@ jobs:
       - name: Set up mise
         uses: jdx/mise-action@v5.1.1
         with:
-          version: 2026.7.14
+          version: *mise_version
           install: false
           cache: false
 
@@ -83,7 +87,7 @@ jobs:
       - name: Set up mise
         uses: jdx/mise-action@v5.1.1
         with:
-          version: 2026.7.14
+          version: *mise_version
           install_args: lychee
 
       - name: Check Markdown links

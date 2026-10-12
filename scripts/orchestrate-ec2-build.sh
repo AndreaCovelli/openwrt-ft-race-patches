@@ -12,6 +12,8 @@ REPO_ROOT="$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/build-name.sh"
 # shellcheck source=scripts/lib/prebuilt-apks.sh
 source "$SCRIPT_DIR/lib/prebuilt-apks.sh"
+# shellcheck source=scripts/lib/builder-image.sh
+source "$SCRIPT_DIR/lib/builder-image.sh"
 
 usage() {
   cat <<'EOF'
@@ -23,7 +25,8 @@ Options:
   --session NAME            tmux session and build id. Default:
                             openwrt-ft-<device-id>-<openwrt-version>-<variant>-<utc>
   --builder-image REF       Prebuilt Docker builder image. Default:
-                            ghcr.io/andreacovelli/openwrt-ft-race-patches/openwrt-builder:ubuntu-noble-20260410-snapshot-20260410t000000z@sha256:ddd581ad95983400564b019d362b674eb24ecd096ca8cb4fc64cc6f5a86a0ea5
+                            DEFAULT_BUILDER_IMAGE in
+                            scripts/lib/builder-image.sh.
                             Private GHCR images need GHCR_TOKEN set locally so
                             the remote host can authenticate before pulling.
                             GHCR_USERNAME is optional when GITHUB_ACTOR or an
@@ -42,9 +45,12 @@ Options:
   --no-strict-manifest      Report package drift without failing the build.
   --include-untracked       Also upload untracked, non-ignored repo files.
   --fetch-artifacts DIR     Wait for completion and copy output files and logs
-                            to DIR. If the build creates output and then fails,
-                            copy output, logs, and reports before returning the
-                            failure.
+                            to DIR, which must not exist yet. Output is staged
+                            and published only after sha256sums.txt verifies.
+                            If the build creates output and then fails, copy
+                            output, logs, and reports before returning the
+                            failure. Polling tolerates SSH outages of up to
+                            about 10 minutes.
   --install-prereqs         Install tmux and docker.io if missing. Default behavior.
   --no-install-prereqs      Fail instead of installing missing tmux/docker on the EC2 host.
   --help                    Show this message.
@@ -82,7 +88,7 @@ abs_repo_path() {
 # shellcheck disable=SC2088
 REMOTE_ROOT='~/openwrt-ft-builds'
 SESSION_NAME=''
-BUILDER_IMAGE='ghcr.io/andreacovelli/openwrt-ft-race-patches/openwrt-builder:ubuntu-noble-20260410-snapshot-20260410t000000z@sha256:ddd581ad95983400564b019d362b674eb24ecd096ca8cb4fc64cc6f5a86a0ea5'
+BUILDER_IMAGE="$DEFAULT_BUILDER_IMAGE"
 REBUILD_BUILDER_IMAGE='0'
 IMAGE_TAG='patch-fix-openwrt-builder'
 BUILDER_PLATFORM='linux/amd64'
@@ -201,7 +207,7 @@ done
 SSH_TARGET="${POSITIONAL[0]}"
 LOCK_FILE="$(abs_repo_path "${POSITIONAL[1]}")"
 
-require_cmd awk bash curl date git mkdir mktemp mv scp sed sha256sum ssh tar
+require_cmd awk bash curl date dirname git mkdir mktemp mv scp sed sha256sum ssh tar
 
 SSH_CMD=(ssh)
 SCP_CMD=(scp)
@@ -241,6 +247,10 @@ esac
 
 [[ -n "$BUILDER_PLATFORM" ]] || die "--platform must not be empty"
 [[ -n "$BUILDER_IMAGE" ]] || die "--builder-image must not be empty"
+if [[ -n "$FETCH_ARTIFACTS_DIR" ]]; then
+  [[ ! -e "$FETCH_ARTIFACTS_DIR" && ! -L "$FETCH_ARTIFACTS_DIR" ]] ||
+    die "artifact directory already exists: $FETCH_ARTIFACTS_DIR"
+fi
 case "$REBUILD_BUILDER_IMAGE" in
   0|1) ;;
   *) die "rebuild builder image value must be 0 or 1" ;;
@@ -304,12 +314,31 @@ lock_prebuilt_apks() {
   )
 }
 
+# SSH and scp exit 255 for connection failures, unlike remote command
+# failures. Retry only those, so a brief network outage cannot end a long build.
+retry_on_ssh_failure() {
+  local attempt status
+
+  for attempt in 1 2 3 4 5; do
+    status=0
+    "$@" || status=$?
+    if ((status != 255)); then
+      return "$status"
+    fi
+    log "Warning: SSH connection failed (attempt $attempt/5)" >&2
+    if ((attempt < 5)); then
+      sleep 10
+    fi
+  done
+  return 255
+}
+
 copy_remote_dir_contents() {
   local remote_dir="$1"
   local local_dir="$2"
 
   mkdir -p "$local_dir"
-  "${SCP_CMD[@]}" -r "$SSH_TARGET:$(remote_shell_quote "$remote_dir")/." "$local_dir/"
+  retry_on_ssh_failure "${SCP_CMD[@]}" -r "$SSH_TARGET:$(remote_shell_quote "$remote_dir")/." "$local_dir/"
 }
 
 copy_remote_build_log() {
@@ -318,9 +347,28 @@ copy_remote_build_log() {
 
   [[ -n "$remote_log_file" ]] || return 0
   mkdir -p "$local_dir/logs"
-  if ! "${SCP_CMD[@]}" "$SSH_TARGET:$(remote_shell_quote "$remote_log_file")" "$local_dir/logs/ec2-build.log"; then
+  if ! retry_on_ssh_failure "${SCP_CMD[@]}" "$SSH_TARGET:$(remote_shell_quote "$remote_log_file")" "$local_dir/logs/ec2-build.log"; then
     log "Warning: failed to copy remote build log: $remote_log_file"
   fi
+}
+
+ARTIFACT_STAGING_DIR=''
+
+create_artifact_staging() {
+  local parent
+
+  parent="$(dirname -- "$FETCH_ARTIFACTS_DIR")"
+  mkdir -p -- "$parent"
+  ARTIFACT_STAGING_DIR="$(mktemp -d "$parent/.openwrt-ft-artifacts.XXXXXXXX")"
+}
+
+# -T prevents nesting into an existing directory; --no-clobber also protects a
+# destination created while the build was running. A skipped move exits zero.
+publish_artifact_staging() {
+  mv -T --no-clobber -- "$ARTIFACT_STAGING_DIR" "$FETCH_ARTIFACTS_DIR"
+  [[ ! -d "$ARTIFACT_STAGING_DIR" ]] ||
+    die "artifact destination appeared during the build; staged copy kept at $ARTIFACT_STAGING_DIR"
+  ARTIFACT_STAGING_DIR=''
 }
 
 log "Preparing remote workspace metadata"
@@ -348,6 +396,12 @@ cache_dir="$remote_root/cache"
 log_dir="$remote_root/logs"
 
 need_install=0
+# Fresh EC2 builders install tmux and Docker from user data at boot. Waiting
+# also avoids racing cloud-init for the apt lock.
+if command -v cloud-init >/dev/null 2>&1; then
+  timeout 900 cloud-init status --wait >/dev/null 2>&1 || true
+fi
+
 command -v tmux >/dev/null 2>&1 || need_install=1
 command -v docker >/dev/null 2>&1 || need_install=1
 
@@ -488,6 +542,9 @@ REMOTE_ARCHIVE="/tmp/openwrt-ft-build-${SESSION_NAME}.tar.gz"
 cleanup() {
   rm -rf "$PREBUILT_APK_CACHE"
   rm -f "$LOCAL_ARCHIVE" "$SNAPSHOT_FILE_LIST"
+  if [[ -n "$ARTIFACT_STAGING_DIR" && -d "$ARTIFACT_STAGING_DIR" ]]; then
+    printf 'warning: unpublished artifact copy kept at %s\n' "$ARTIFACT_STAGING_DIR" >&2
+  fi
 }
 trap cleanup EXIT
 
@@ -766,38 +823,61 @@ if [[ -n "$FETCH_ARTIFACTS_DIR" ]]; then
   [[ -n "$remote_tmux_session" ]] || die "remote tmux session was not reported"
 
   log "Waiting for remote build session to finish: $SESSION_NAME"
-  while remote_tmux_has_session "$remote_tmux_session" >/dev/null 2>&1; do
+  # tmux has-session exits 1 once the session ends; 255 means SSH failed.
+  # Twenty consecutive failed 30-second polls is about 10 minutes offline.
+  poll_failures=0
+  while true; do
+    poll_status=0
+    remote_tmux_has_session "$remote_tmux_session" >/dev/null 2>&1 || poll_status=$?
+    case "$poll_status" in
+      0)
+        poll_failures=0
+        ;;
+      255)
+        poll_failures=$((poll_failures + 1))
+        ((poll_failures < 20)) ||
+          die "lost SSH to $SSH_TARGET while the build may still be running; reattach: ssh $SSH_TARGET \"tmux attach -t $remote_tmux_session\""
+        log "Warning: SSH poll failed ($poll_failures/20); retrying"
+        ;;
+      *)
+        break
+        ;;
+    esac
     sleep 30
   done
 
-  build_status="$(remote_cat_file "$remote_status_file" 2>/dev/null || true)"
+  build_status="$(retry_on_ssh_failure remote_cat_file "$remote_status_file" 2>/dev/null || true)"
+  create_artifact_staging
   case "$build_status" in
     0)
       ;;
     '')
-      if remote_dir_exists "$remote_artifact_dir" >/dev/null 2>&1; then
+      if retry_on_ssh_failure remote_dir_exists "$remote_artifact_dir" >/dev/null 2>&1; then
         log "Remote build wrote artifacts but no status file was found; copying artifacts before failing"
-        copy_remote_dir_contents "$remote_artifact_dir" "$FETCH_ARTIFACTS_DIR"
-        if remote_dir_exists "$remote_report_dir" >/dev/null 2>&1; then
-          copy_remote_dir_contents "$remote_report_dir" "$FETCH_ARTIFACTS_DIR/reports"
+        copy_remote_dir_contents "$remote_artifact_dir" "$ARTIFACT_STAGING_DIR"
+        if retry_on_ssh_failure remote_dir_exists "$remote_report_dir" >/dev/null 2>&1; then
+          copy_remote_dir_contents "$remote_report_dir" "$ARTIFACT_STAGING_DIR/reports"
         fi
       fi
-      copy_remote_build_log "$remote_log_file" "$FETCH_ARTIFACTS_DIR"
+      copy_remote_build_log "$remote_log_file" "$ARTIFACT_STAGING_DIR"
+      publish_artifact_staging
       die "remote build finished but no status file was found; inspect log: ssh $SSH_TARGET \"tail -f $(remote_shell_quote "$remote_log_file")\""
       ;;
     *[!0-9]*)
-      copy_remote_build_log "$remote_log_file" "$FETCH_ARTIFACTS_DIR"
+      copy_remote_build_log "$remote_log_file" "$ARTIFACT_STAGING_DIR"
+      publish_artifact_staging
       die "remote build wrote an invalid status: $build_status"
       ;;
     *)
-      if remote_dir_exists "$remote_artifact_dir" >/dev/null 2>&1; then
+      if retry_on_ssh_failure remote_dir_exists "$remote_artifact_dir" >/dev/null 2>&1; then
         log "Remote build failed with exit status $build_status; copying available artifacts to $FETCH_ARTIFACTS_DIR"
-        copy_remote_dir_contents "$remote_artifact_dir" "$FETCH_ARTIFACTS_DIR"
-        if remote_dir_exists "$remote_report_dir" >/dev/null 2>&1; then
-          copy_remote_dir_contents "$remote_report_dir" "$FETCH_ARTIFACTS_DIR/reports"
+        copy_remote_dir_contents "$remote_artifact_dir" "$ARTIFACT_STAGING_DIR"
+        if retry_on_ssh_failure remote_dir_exists "$remote_report_dir" >/dev/null 2>&1; then
+          copy_remote_dir_contents "$remote_report_dir" "$ARTIFACT_STAGING_DIR/reports"
         fi
       fi
-      copy_remote_build_log "$remote_log_file" "$FETCH_ARTIFACTS_DIR"
+      copy_remote_build_log "$remote_log_file" "$ARTIFACT_STAGING_DIR"
+      publish_artifact_staging
       log "Artifacts and logs copied to $FETCH_ARTIFACTS_DIR"
       printf 'error: remote build failed with exit status %s; inspect log: ssh %s "tail -f %s"\n' \
         "$build_status" "$SSH_TARGET" "$(remote_shell_quote "$remote_log_file")" >&2
@@ -805,11 +885,20 @@ if [[ -n "$FETCH_ARTIFACTS_DIR" ]]; then
       ;;
   esac
 
-  log "Copying remote artifacts to $FETCH_ARTIFACTS_DIR"
-  copy_remote_dir_contents "$remote_artifact_dir" "$FETCH_ARTIFACTS_DIR"
-  if remote_dir_exists "$remote_report_dir" >/dev/null 2>&1; then
-    copy_remote_dir_contents "$remote_report_dir" "$FETCH_ARTIFACTS_DIR/reports"
+  log "Copying remote artifacts for $FETCH_ARTIFACTS_DIR"
+  copy_remote_dir_contents "$remote_artifact_dir" "$ARTIFACT_STAGING_DIR"
+  if retry_on_ssh_failure remote_dir_exists "$remote_report_dir" >/dev/null 2>&1; then
+    copy_remote_dir_contents "$remote_report_dir" "$ARTIFACT_STAGING_DIR/reports"
   fi
-  copy_remote_build_log "$remote_log_file" "$FETCH_ARTIFACTS_DIR"
+  copy_remote_build_log "$remote_log_file" "$ARTIFACT_STAGING_DIR"
+
+  [[ -f "$ARTIFACT_STAGING_DIR/sha256sums.txt" ]] ||
+    die "artifact checksum file not found in remote build output"
+  log "Verifying copied artifact checksums"
+  (
+    cd "$ARTIFACT_STAGING_DIR"
+    sha256sum -c sha256sums.txt
+  )
+  publish_artifact_staging
   log "Artifacts and logs copied to $FETCH_ARTIFACTS_DIR"
 fi

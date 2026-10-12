@@ -24,8 +24,10 @@ Options:
   --help                 Show this message.
 
 The script backs up the router's sysupgrade config set before copying or
-flashing the image. OpenWrt Dropbear commonly lacks SFTP, so image and backup
-copies use legacy scp mode.
+flashing the image, and keeps the remote backup when the local copy is not a
+readable gzip tar archive. When sha256sums.txt sits next to the image, the
+image must match its entry there. OpenWrt Dropbear commonly lacks SFTP, so
+image and backup copies use legacy scp mode.
 EOF
 }
 
@@ -134,7 +136,7 @@ case "$assume_yes:$no_flash" in
   1:1) die "--yes and --no-flash cannot be used together" ;;
 esac
 
-require_cmd awk basename date dirname grep mkdir scp sed sha256sum ssh stat
+require_cmd awk basename date dirname grep mkdir scp sed sha256sum ssh stat tar
 
 image_base="$(basename "$image_path")"
 if [[ -z "$remote_image" ]]; then
@@ -177,6 +179,22 @@ local_backup="$backup_dir/${target_name}-${timestamp}-sysupgrade-backup.tar.gz"
 remote_backup="/tmp/${target_name}-${timestamp}-sysupgrade-backup.tar.gz"
 
 local_sha="$(sha256sum "$image_path" | awk '{ print $1 }')"
+image_sums_file="$(dirname "$image_path")/sha256sums.txt"
+if [[ -f "$image_sums_file" ]]; then
+  expected_sha="$(
+    awk -v image="$image_base" '
+      { name = $2; sub(/^\*/, "", name) }
+      name == image { print $1; exit }
+    ' "$image_sums_file"
+  )"
+  [[ -n "$expected_sha" ]] ||
+    die "$image_sums_file has no entry for $image_base"
+  [[ "$expected_sha" == "$local_sha" ]] ||
+    die "local image checksum mismatch for $image_base: expected $expected_sha got $local_sha"
+  log "Local image matches $image_sums_file"
+else
+  log "Warning: no sha256sums.txt next to the image; verify sha256 $local_sha manually"
+fi
 image_size_bytes="$(stat -c '%s' "$image_path")"
 image_size_kib="$(((image_size_bytes + 1023) / 1024))"
 required_remote_kib="$((image_size_kib + 4096))"
@@ -190,6 +208,11 @@ remote_backup_created='1'
 
 log "Copying router config backup to $local_backup"
 scp -O "$ssh_target:$remote_backup" "$local_backup"
+if [[ ! -s "$local_backup" ]] || ! tar -tzf "$local_backup" >/dev/null; then
+  # Keep the router-side copy; it may be the only usable backup.
+  remote_backup_created='0'
+  die "local backup is not a readable gzip tar archive: $local_backup; remote copy kept at $ssh_target:$remote_backup"
+fi
 ssh "$ssh_target" "rm -f $(remote_quote "$remote_backup")"
 remote_backup_created='0'
 
