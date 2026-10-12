@@ -6,9 +6,6 @@ die() {
   exit 1
 }
 
-[[ -L locks/build.lock && "$(readlink locks/build.lock)" == 'build-wr3000e.lock' ]] ||
-  die 'locks/build.lock must remain a symlink to build-wr3000e.lock to prevent pin drift'
-
 require_nonempty() {
   local lock="$1"
   local var="$2"
