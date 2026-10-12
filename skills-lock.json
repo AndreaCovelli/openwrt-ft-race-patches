@@ -5,13 +5,13 @@
       "source": "AndreaCovelli/my-skills",
       "sourceType": "github",
       "skillPath": "skills/dependabot/SKILL.md",
-      "computedHash": "4ce69d09b08995f6f00331908d11bb0214f8437ef5f29f5c7b75ee62882af1e4"
+      "computedHash": "5a149f4a8e1d2283537c0e2831ff480702271849ffeb4f0de3fd514f8e3e10bb"
     },
     "docker": {
       "source": "AndreaCovelli/my-skills",
       "sourceType": "github",
       "skillPath": "skills/docker/SKILL.md",
-      "computedHash": "e0be697116b06a9e62d5256339c13c31b9a18c6f2154dfd43b419e5bc0d0be2e"
+      "computedHash": "c110217ce2b9ec2143856f1f31c815de4c388d510cad2a469393ea75a4ebbf17"
     },
     "gh-cli": {
       "source": "AndreaCovelli/my-skills",
@@ -19,23 +19,17 @@
       "skillPath": "skills/gh-cli/SKILL.md",
       "computedHash": "08f30bcbf65ec52bf3a0090e6e5b76693f65f35bc2a286a091c01648ea0d3e19"
     },
-    "github-actions-docs": {
+    "github-actions": {
       "source": "AndreaCovelli/my-skills",
       "sourceType": "github",
-      "skillPath": "skills/github-actions-docs/SKILL.md",
-      "computedHash": "d7198df02ac91d443f2413375eec31353f6bc0beab5a60ebbc70d67c85e42058"
-    },
-    "github-actions-workflows": {
-      "source": "AndreaCovelli/my-skills",
-      "sourceType": "github",
-      "skillPath": "skills/github-actions-workflows/SKILL.md",
-      "computedHash": "ccd5454712bb88f88c36e3a797f7126a7ac0d6b6b3cb02fe0a4a8d2f8bd15de6"
+      "skillPath": "skills/github-actions/SKILL.md",
+      "computedHash": "a5ce3c39b2c59fdb7fd654bfd3a044960d2f823a33f0c8a4c7a90119b53091f4"
     },
     "pr-feedback": {
       "source": "AndreaCovelli/my-skills",
       "sourceType": "github",
       "skillPath": "skills/pr-feedback/SKILL.md",
-      "computedHash": "c6ecf803d98cffe7eb2b5054719ba633317663421a337951aeaa51350155af22"
+      "computedHash": "7d281c042c2970486039d84212ab585b467bc5b475572883038b358862cc6cb4"
     }
   }
 }
