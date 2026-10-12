@@ -50,14 +50,62 @@ validate_prebuilt_apks() {
   done
 }
 
+makefile_value() {
+  local makefile="$1"
+  local name="$2"
+
+  awk -v name="$name" '
+    index($0, name ":=") == 1 { print substr($0, length(name) + 3); exit }
+  ' "$makefile"
+}
+
+# Local feed packages that repackage an APK must name the same file and hash
+# as the PREBUILT_APKS entry that seeds DL_DIR, or OpenWrt rejects the source.
+validate_prebuilt_apk_sources() {
+  local lock="$1"
+  local entry name file url sha256 path makefile pkg_source pkg_hash
+  local -A apk_hashes=()
+  local -A referenced=()
+
+  if declare -p PREBUILT_APKS >/dev/null 2>&1; then
+    local -n source_prebuilt_apks=PREBUILT_APKS
+    for entry in "${source_prebuilt_apks[@]}"; do
+      parse_prebuilt_apk "$lock" "$entry" name file url sha256
+      apk_hashes["$file"]="$sha256"
+    done
+  fi
+
+  if declare -p LOCAL_FEEDS >/dev/null 2>&1; then
+    local -n source_local_feeds=LOCAL_FEEDS
+    for entry in "${source_local_feeds[@]}"; do
+      path="${entry#*:}"
+      while IFS= read -r -d '' makefile; do
+        pkg_source="$(makefile_value "$makefile" PKG_SOURCE)"
+        [[ "$pkg_source" == *.apk ]] || continue
+        pkg_hash="$(makefile_value "$makefile" PKG_HASH)"
+        [[ -n "${apk_hashes[$pkg_source]:-}" ]] ||
+          die "$lock: $makefile uses $pkg_source, but PREBUILT_APKS has no entry for it"
+        [[ "$pkg_hash" == "${apk_hashes[$pkg_source]}" ]] ||
+          die "$lock: $makefile PKG_HASH differs from PREBUILT_APKS for $pkg_source"
+        referenced["$pkg_source"]=1
+      done < <(find "$path" -name Makefile -type f -print0)
+    done
+  fi
+
+  for file in "${!apk_hashes[@]}"; do
+    [[ -n "${referenced[$file]:-}" ]] ||
+      die "$lock: PREBUILT_APKS file is not a PKG_SOURCE in any local feed: $file"
+  done
+}
+
 validate_extra_patch_dest() {
   local lock="$1"
   local dest="$2"
 
   case "$dest" in
-    package/kernel/mac80211/patches/subsys/*.patch|package/network/services/hostapd/patches/*.patch) ;;
+    package/kernel/mac80211/patches/subsys/*.patch) ;;
     *)
-      die "$lock: extra patch destination must target mac80211 subsys or hostapd package patches: $dest"
+      die "$lock: extra patch destination must target mac80211 subsys patches: $dest"
       ;;
   esac
 }
@@ -284,5 +332,6 @@ for lock in "${locks[@]}"; do
 
     validate_local_feeds "$lock"
     validate_prebuilt_apks "$lock"
+    validate_prebuilt_apk_sources "$lock"
   )
 done

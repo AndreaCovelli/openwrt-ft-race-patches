@@ -74,11 +74,12 @@ chmod +x "$source_repo/scripts/feeds"
 cat >"$source_repo/Makefile" <<'MAKEFILE'
 .PHONY: all defconfig download \
 	package/kernel/mac80211/clean package/kernel/mac80211/compile \
-	package/network/services/hostapd/clean package/network/services/hostapd/compile
+	package/feeds/testfeed/testpkg/clean package/feeds/testfeed/testpkg/compile
 
 all:
 	@printf 'all\n' >>make-calls.log
 	@test ! -e .force-fail
+	@test "$$FAKE_FORCE_FAIL" != '1'
 	@mkdir -p bin/targets/test/sub
 	@printf 'sysupgrade\n' >bin/targets/test/sub/openwrt-test-fake-device-squashfs-sysupgrade.bin
 	@printf 'initramfs\n' >bin/targets/test/sub/openwrt-test-fake-device-initramfs-kernel.bin
@@ -100,11 +101,11 @@ package/kernel/mac80211/clean:
 package/kernel/mac80211/compile:
 	@printf 'mac80211-compile\n' >>make-calls.log
 
-package/network/services/hostapd/clean:
-	@printf 'hostapd-clean\n' >>make-calls.log
+package/feeds/testfeed/testpkg/clean:
+	@printf 'testpkg-clean\n' >>make-calls.log
 
-package/network/services/hostapd/compile:
-	@printf 'hostapd-compile\n' >>make-calls.log
+package/feeds/testfeed/testpkg/compile:
+	@printf 'testpkg-compile\n' >>make-calls.log
 MAKEFILE
 
 git_commit_all "$source_repo" 'seed fake OpenWrt'
@@ -125,13 +126,20 @@ htop=1
 WORLD
 printf 'base - 1\nhtop - 1\n' >"$input_root/reference.manifest"
 printf 'mac80211 patch v1\n' >"$input_root/mac80211.patch"
-printf 'hostapd patch v1\n' >"$input_root/hostapd.patch"
+printf 'mac80211 extra patch v1\n' >"$input_root/extra.patch"
+mkdir -p "$input_root/feed/testpkg"
+printf 'testpkg v1\n' >"$input_root/feed/testpkg/Makefile"
+reference_manifest="$input_root/reference.manifest"
+
+# shellcheck source=scripts/lib/local-feeds.sh
+. "$repo_root/scripts/lib/local-feeds.sh"
 
 write_lock() {
-  local mac80211_sha hostapd_sha
+  local mac80211_sha extra_sha feed_sha
 
   mac80211_sha="$(sha256sum "$input_root/mac80211.patch" | awk '{print $1}')"
-  hostapd_sha="$(sha256sum "$input_root/hostapd.patch" | awk '{print $1}')"
+  extra_sha="$(sha256sum "$input_root/extra.patch" | awk '{print $1}')"
+  feed_sha="$(local_feed_digest "$input_root/feed")"
   cat >"$lock_file" <<LOCK
 OPENWRT_REPO_URL='$source_repo'
 OPENWRT_TAG='vtest'
@@ -146,15 +154,18 @@ FEED_TELEPHONY_URL='$tmp_root/feed-telephony'
 FEED_TELEPHONY_REF='$telephony_ref'
 FEED_VIDEO_URL='$tmp_root/feed-video'
 FEED_VIDEO_REF='$video_ref'
+LOCAL_FEEDS=('testfeed:$input_root/feed')
+LOCAL_FEED_SHA256S=('testfeed:$feed_sha')
+LOCAL_FEED_INSTALLS=('testfeed:testpkg')
 PATCH_SOURCE='$input_root/mac80211.patch'
 PATCH_DEST='package/kernel/mac80211/patches/subsys/mac80211.patch'
 PATCH_SHA256='$mac80211_sha'
-EXTRA_PATCH_SOURCES=('$input_root/hostapd.patch')
-EXTRA_PATCH_DESTS=('package/network/services/hostapd/patches/hostapd.patch')
-EXTRA_PATCH_SHA256S=('$hostapd_sha')
+EXTRA_PATCH_SOURCES=('$input_root/extra.patch')
+EXTRA_PATCH_DESTS=('package/kernel/mac80211/patches/subsys/extra.patch')
+EXTRA_PATCH_SHA256S=('$extra_sha')
 CONFIG_FRAGMENT='$input_root/diffconfig'
 WORLD_SOURCE='$input_root/world.txt'
-REFERENCE_MANIFEST='$input_root/reference.manifest'
+REFERENCE_MANIFEST='$reference_manifest'
 TARGET='test'
 SUBTARGET='sub'
 DEVICE_ID='fake-device'
@@ -190,6 +201,8 @@ run_build seed
   die 'missing full-build compatibility state'
 [[ -f "$workspace/.openwrt-ft-state/last-success.tsv" ]] ||
   die 'missing full-build success state'
+[[ -f "$workspace/.openwrt-ft-state/prepared.tsv" ]] ||
+  die 'missing full-build prepared state'
 grep -Fqx 'build_mode=full' "$workspace/output/build-summary.txt" ||
   die 'seed build was not recorded as full'
 grep -Fqx "workspace_id=$workspace_id" "$workspace/output/build-summary.txt" ||
@@ -199,20 +212,20 @@ grep -Fqx 'CONFIG_PACKAGE_htop=y' "$workspace/openwrt/.config" ||
 
 : >"$workspace/openwrt/make-calls.log"
 mac80211_dest="$workspace/openwrt/package/kernel/mac80211/patches/subsys/mac80211.patch"
-hostapd_dest="$workspace/openwrt/package/network/services/hostapd/patches/hostapd.patch"
-touch -t 200001010000 "$mac80211_dest" "$hostapd_dest"
+extra_dest="$workspace/openwrt/package/kernel/mac80211/patches/subsys/extra.patch"
+touch -t 200001010000 "$mac80211_dest" "$extra_dest"
 mac80211_mtime="$(stat -c %y "$mac80211_dest")"
-hostapd_mtime="$(stat -c %y "$hostapd_dest")"
+extra_mtime="$(stat -c %y "$extra_dest")"
 printf 'stale\n' >"$workspace/openwrt/bin/targets/test/sub/old-fake-device-stale.bin"
 run_build no-change
 [[ "$(stat -c %y "$mac80211_dest")" == "$mac80211_mtime" && \
-  "$(stat -c %y "$hostapd_dest")" == "$hostapd_mtime" ]] ||
+  "$(stat -c %y "$extra_dest")" == "$extra_mtime" ]] ||
   die 'no-change reuse touched a patch and invalidated OpenWrt preparation stamps'
 grep -Fqx 'build_mode=incremental' "$workspace/output/build-summary.txt" ||
   die 'compatible reuse was not recorded as incremental'
 grep -Fqx 'rebuilt_packages=none' "$workspace/output/build-summary.txt" ||
   die 'no-change reuse unexpectedly selected a package rebuild'
-if grep -Eq '(mac80211|hostapd)-(clean|compile)' "$workspace/openwrt/make-calls.log"; then
+if grep -Eq '(mac80211|testpkg)-(clean|compile)' "$workspace/openwrt/make-calls.log"; then
   die 'no-change reuse ran a package rebuild'
 fi
 [[ ! -e "$workspace/openwrt/bin/targets/test/sub/old-fake-device-stale.bin" ]] ||
@@ -243,8 +256,8 @@ printf 'mac80211 patch v2\n' >"$input_root/mac80211.patch"
 write_lock
 : >"$workspace/openwrt/make-calls.log"
 run_build mac80211-change
-[[ "$(stat -c %y "$hostapd_dest")" == "$hostapd_mtime" ]] ||
-  die 'mac80211-only rebuild touched the hostapd patch'
+[[ "$(stat -c %y "$extra_dest")" == "$extra_mtime" ]] ||
+  die 'mac80211 patch change touched the unchanged extra patch'
 cmp -s "$input_root/mac80211.patch" "$mac80211_dest" || die 'changed mac80211 patch was not installed'
 grep -Fqx 'rebuilt_packages=mac80211' "$workspace/output/build-summary.txt" ||
   die 'mac80211 patch change did not select mac80211'
@@ -252,55 +265,90 @@ grep -Fqx 'mac80211-clean' "$workspace/openwrt/make-calls.log" ||
   die 'mac80211 clean was not run'
 grep -Fqx 'mac80211-compile' "$workspace/openwrt/make-calls.log" ||
   die 'mac80211 compile was not run'
-if grep -Eq 'hostapd-(clean|compile)' "$workspace/openwrt/make-calls.log"; then
-  die 'mac80211-only change rebuilt hostapd'
+if grep -Eq 'testpkg-(clean|compile)' "$workspace/openwrt/make-calls.log"; then
+  die 'mac80211-only change rebuilt local feed packages'
 fi
 
-previous_hostapd_sha="$(
+previous_extra_sha="$(
   awk -F '\t' '$1 == "patch.001.sha256" { print $2 }' \
     "$workspace/.openwrt-ft-state/last-success.tsv"
 )"
-printf 'hostapd patch v2\n' >"$input_root/hostapd.patch"
+printf 'mac80211 extra patch v2\n' >"$input_root/extra.patch"
 write_lock
 touch "$workspace/openwrt/.force-fail"
-if run_build hostapd-failure; then
+if run_build extra-patch-failure; then
   die 'forced incremental failure unexpectedly succeeded'
 fi
-stored_hostapd_sha="$(
+stored_extra_sha="$(
   awk -F '\t' '$1 == "patch.001.sha256" { print $2 }' \
     "$workspace/.openwrt-ft-state/last-success.tsv"
 )"
-[[ "$stored_hostapd_sha" == "$previous_hostapd_sha" ]] ||
+[[ "$stored_extra_sha" == "$previous_extra_sha" ]] ||
   die 'failed build advanced the last-success patch state'
 
 rm "$workspace/openwrt/.force-fail"
 : >"$workspace/openwrt/make-calls.log"
-run_build hostapd-retry
-grep -Fqx 'rebuilt_packages=hostapd' "$workspace/output/build-summary.txt" ||
-  die 'retry did not select the previously failed hostapd change'
-grep -Fqx 'hostapd-compile' "$workspace/openwrt/make-calls.log" ||
-  die 'hostapd retry did not compile hostapd'
+run_build extra-patch-retry
+cmp -s "$input_root/extra.patch" "$extra_dest" || die 'changed extra patch was not installed'
+grep -Fqx 'rebuilt_packages=mac80211' "$workspace/output/build-summary.txt" ||
+  die 'retry did not select the previously failed extra mac80211 patch change'
+grep -Fqx 'mac80211-compile' "$workspace/openwrt/make-calls.log" ||
+  die 'extra patch retry did not compile mac80211'
 
 printf 'mac80211 patch v3\n' >"$input_root/mac80211.patch"
-printf 'hostapd patch v3\n' >"$input_root/hostapd.patch"
+printf 'testpkg v2\n' >"$input_root/feed/testpkg/Makefile"
 write_lock
 : >"$workspace/openwrt/make-calls.log"
 run_build both-changed
-grep -Fqx 'rebuilt_packages=mac80211,hostapd' "$workspace/output/build-summary.txt" ||
-  die 'simultaneous patch changes did not select both packages'
+grep -Fqx 'rebuilt_packages=mac80211,local-feeds' "$workspace/output/build-summary.txt" ||
+  die 'simultaneous patch and local feed changes did not select both groups'
 grep -Fqx 'mac80211-compile' "$workspace/openwrt/make-calls.log" ||
-  die 'simultaneous patch changes omitted mac80211'
-grep -Fqx 'hostapd-compile' "$workspace/openwrt/make-calls.log" ||
-  die 'simultaneous patch changes omitted hostapd'
+  die 'simultaneous changes omitted mac80211'
+grep -Fqx 'testpkg-compile' "$workspace/openwrt/make-calls.log" ||
+  die 'simultaneous changes omitted local feed packages'
 
 : >"$workspace/openwrt/make-calls.log"
 run_build forced-all --rebuild-package all
-grep -Fqx 'rebuilt_packages=mac80211,hostapd' "$workspace/output/build-summary.txt" ||
-  die 'forced all rebuild did not record both packages'
+grep -Fqx 'rebuilt_packages=mac80211,local-feeds' "$workspace/output/build-summary.txt" ||
+  die 'forced all rebuild did not record every package group'
 grep -Fqx 'mac80211-compile' "$workspace/openwrt/make-calls.log" ||
   die 'forced all rebuild omitted mac80211'
-grep -Fqx 'hostapd-compile' "$workspace/openwrt/make-calls.log" ||
-  die 'forced all rebuild omitted hostapd'
+grep -Fqx 'testpkg-compile' "$workspace/openwrt/make-calls.log" ||
+  die 'forced all rebuild omitted local feed packages'
+
+printf 'testpkg v3\n' >"$input_root/feed/testpkg/Makefile"
+write_lock
+: >"$workspace/openwrt/make-calls.log"
+run_build local-feed-change
+grep -Fqx 'rebuilt_packages=local-feeds' "$workspace/output/build-summary.txt" ||
+  die 'local feed change did not select local feed packages'
+grep -Fqx 'testpkg-clean' "$workspace/openwrt/make-calls.log" ||
+  die 'local feed change did not clean the installed package'
+grep -Fqx 'testpkg-compile' "$workspace/openwrt/make-calls.log" ||
+  die 'local feed change did not compile the installed package'
+if grep -Eq 'mac80211-(clean|compile)' "$workspace/openwrt/make-calls.log"; then
+  die 'local feed change rebuilt mac80211'
+fi
+
+cp "$input_root/reference.manifest" "$input_root/reference-moved.manifest"
+reference_manifest="$input_root/reference-moved.manifest"
+write_lock
+: >"$workspace/openwrt/make-calls.log"
+run_build reference-manifest-moved
+grep -Fqx 'build_mode=incremental' "$workspace/output/build-summary.txt" ||
+  die 'reference manifest path change invalidated the workspace'
+grep -Fqx 'rebuilt_packages=none' "$workspace/output/build-summary.txt" ||
+  die 'reference manifest path change selected a package rebuild'
+
+success_state="$workspace/.openwrt-ft-state/last-success.tsv"
+cp "$success_state" "$tmp_root/last-success.tsv"
+sed -i 's/^state_schema\t.*$/state_schema\t1/' "$success_state"
+if run_build old-schema >"$tmp_root/old-schema.log" 2>&1; then
+  die 'workspace with an older state schema was accepted'
+fi
+grep -Fq 'state schema is 1' "$tmp_root/old-schema.log" ||
+  die 'state schema refusal did not identify the stored schema'
+cp "$tmp_root/last-success.tsv" "$success_state"
 
 summary_sha="$(sha256sum "$workspace/output/build-summary.txt" | awk '{print $1}')"
 if WORK_ROOT="$work_root" CACHE_ROOT="$cache_root" USE_CCACHE=0 \
@@ -329,6 +377,28 @@ grep -Fqx 'build_mode=full' "$workspace/output/build-summary.txt" ||
   die 'fresh replacement was not a full build'
 grep -Fqx 'builder_id=builder-b' "$workspace/output/build-summary.txt" ||
   die 'fresh replacement did not store the new builder ID'
+
+resume_workspace="$work_root/resume"
+if FAKE_FORCE_FAIL=1 run_build resume-fail --workspace resume >"$tmp_root/resume-fail.log" 2>&1; then
+  die 'forced full-build failure unexpectedly succeeded'
+fi
+[[ -f "$resume_workspace/.openwrt-ft-state/prepared.tsv" ]] ||
+  die 'failed full build did not record prepared state'
+[[ ! -e "$resume_workspace/.openwrt-ft-state/last-success.tsv" ]] ||
+  die 'failed full build recorded success state'
+: >"$resume_workspace/openwrt/make-calls.log"
+run_build resume-retry --workspace resume
+grep -Fqx 'build_mode=resume' "$resume_workspace/output/build-summary.txt" ||
+  die 'retry after failed full build was not recorded as resume'
+grep -Fqx 'download' "$resume_workspace/openwrt/make-calls.log" ||
+  die 'resume did not finish source downloads'
+grep -Fqx 'all' "$resume_workspace/openwrt/make-calls.log" ||
+  die 'resume did not run the image build'
+if grep -Fqx 'defconfig' "$resume_workspace/openwrt/make-calls.log"; then
+  die 'resume regenerated the prepared configuration'
+fi
+[[ -f "$resume_workspace/.openwrt-ft-state/last-success.tsv" ]] ||
+  die 'successful resume did not record success state'
 
 legacy_workspace="$work_root/legacy"
 mkdir -p "$legacy_workspace"

@@ -39,7 +39,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$tmp_root/bin" "$repo_tmp/devices/wr3000e"
+mkdir -p "$tmp_root/bin" "$repo_tmp/devices/wr3000e" "$repo_tmp/devices/wr3000p"
 
 cat >"$tmp_root/bin/ssh" <<'EOF'
 #!/usr/bin/env bash
@@ -126,6 +126,11 @@ JSON
   'https://sysupgrade.example.test/json/v1/releases/25.12.4/targets/mediatek/filogic/cudy_wr3000e-v1.json')
     cat <<'JSON'
 {"version_number":"25.12.4","version_code":"r32933-4ccb782af7","target":"mediatek/filogic","id":"cudy_wr3000e-v1","supported_devices":["cudy,wr3000e-v1","R53"]}
+JSON
+    ;;
+  'https://sysupgrade.example.test/json/v1/releases/25.12.4/targets/mediatek/filogic/cudy_wr3000p-v1.json')
+    cat <<'JSON'
+{"version_number":"25.12.4","version_code":"r32933-4ccb782af7","target":"mediatek/filogic","id":"cudy_wr3000p-v1","supported_devices":["cudy,wr3000p-v1"]}
 JSON
     ;;
   'https://downloads.openwrt.org/releases/25.12.4/targets/mediatek/filogic/feeds.buildinfo')
@@ -265,6 +270,38 @@ if TEST_ROUTER_BOARD='cudy,wr3000-v1' scripts/prepare-openwrt-upgrade.sh --dry-r
   die 'board mismatch unexpectedly succeeded'
 fi
 assert_file_contains "$out_board_mismatch" 'does not support router board cudy,wr3000-v1'
+
+out_prebuilt_dry_run="$tmp_root/prepare-upgrade-prebuilt-dry-run.out"
+p_lock_before="$(sha256sum locks/build-wr3000p.lock | awk '{ print $1 }')"
+TEST_ROUTER_BOARD='cudy,wr3000p-v1' scripts/prepare-openwrt-upgrade.sh \
+  --version 25.12.4 --dry-run router locks/build-wr3000p.lock >"$out_prebuilt_dry_run" 2>&1
+assert_file_contains "$out_prebuilt_dry_run" 'Prebuilt APK built for 25.12.5, not 25.12.4: usteer-'
+assert_file_contains "$out_prebuilt_dry_run" 'Warning: publish matching prebuilt APKs'
+[[ "$(sha256sum locks/build-wr3000p.lock | awk '{ print $1 }')" == "$p_lock_before" ]] ||
+  die 'prebuilt APK dry run modified the selected lock'
+
+cp devices/wr3000p/diffconfig devices/wr3000p/installed.manifest \
+  devices/wr3000p/apk-installed-and-world.txt "$repo_tmp/devices/wr3000p/"
+sed \
+  -e "s|'devices/wr3000p/|'.tmp-prepare-openwrt-upgrade-test/devices/wr3000p/|" \
+  locks/build-wr3000p.lock >"$repo_tmp/build-wr3000p.lock"
+p_tmp_lock_before="$(sha256sum "$repo_tmp/build-wr3000p.lock" | awk '{ print $1 }')"
+out_prebuilt_mismatch="$tmp_root/prepare-upgrade-prebuilt-mismatch.out"
+if TEST_ROUTER_BOARD='cudy,wr3000p-v1' BUILD_SCRIPT="$tmp_root/build-wrapper" \
+  scripts/prepare-openwrt-upgrade.sh --version 25.12.4 router \
+    .tmp-prepare-openwrt-upgrade-test/build-wr3000p.lock >"$out_prebuilt_mismatch" 2>&1; then
+  die 'prebuilt APK release mismatch unexpectedly succeeded'
+fi
+assert_file_contains "$out_prebuilt_mismatch" 'pass --allow-prebuilt-apk-mismatch'
+[[ "$(sha256sum "$repo_tmp/build-wr3000p.lock" | awk '{ print $1 }')" == "$p_tmp_lock_before" ]] ||
+  die 'prebuilt APK release mismatch modified the selected lock'
+
+EXPECTED_BUILDER_PATH="$PATH" TEST_CAPTURED_WORLD="$tmp_root/captured-p.world" \
+  TEST_ROUTER_BOARD='cudy,wr3000p-v1' BUILD_SCRIPT="$tmp_root/build-wrapper" \
+  scripts/prepare-openwrt-upgrade.sh --version 25.12.4 --allow-prebuilt-apk-mismatch \
+    router .tmp-prepare-openwrt-upgrade-test/build-wr3000p.lock \
+    -- --make-jobs 4 >"$tmp_root/prepare-upgrade-prebuilt-allowed.out" 2>&1
+assert_file_contains "$repo_tmp/build-wr3000p.lock" "OPENWRT_TAG='v25.12.4'"
 
 bad_lock="$repo_tmp/bad-path.lock"
 sed "s|REFERENCE_MANIFEST='devices/wr3000e/installed.manifest'|REFERENCE_MANIFEST='../outside.manifest'|" locks/build-wr3000e.lock >"$bad_lock"

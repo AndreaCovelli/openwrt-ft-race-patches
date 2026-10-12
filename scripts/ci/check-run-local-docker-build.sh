@@ -14,11 +14,16 @@ fake_docker_main() {
   local use_ccache=''
   local fresh=''
   local rebuild_packages=''
+  local user=''
   local output_dir
 
   case "${1:-}" in
     buildx)
       return 1
+      ;;
+    pull)
+      printf '%s\n' "${2:-}" >>"$FAKE_DOCKER_PULLS"
+      return 0
       ;;
     image)
       [[ "${2:-}" == 'inspect' ]] || die "unexpected fake docker image command: $*"
@@ -41,6 +46,11 @@ fake_docker_main() {
               FRESH=*) fresh="${2#FRESH=}" ;;
               REBUILD_PACKAGES=*) rebuild_packages="${2#REBUILD_PACKAGES=}" ;;
             esac
+            shift 2
+            ;;
+          --user)
+            [[ $# -ge 2 ]] || die 'fake docker received an incomplete --user option'
+            user="$2"
             shift 2
             ;;
           -v)
@@ -66,6 +76,8 @@ fake_docker_main() {
   [[ -n "$workspace_id" ]] || die 'fake docker did not receive WORKSPACE_ID'
   [[ "$builder_id" == 'sha256:fake-builder-image-id' ]] ||
     die 'fake docker did not receive the inspected BUILDER_ID'
+  [[ "$user" == "$(id -u):$(id -g)" ]] ||
+    die "fake docker did not run as the invoking user: $user"
 
   printf '%s\t%s\t%s\t%s\t%s\n' \
     "$session" "$workspace_id" "$use_ccache" "$fresh" "$rebuild_packages" \
@@ -105,7 +117,7 @@ trap 'rm -rf "$tmp_root"' EXIT
 repo_root="$tmp_root/repo"
 mkdir -p "$repo_root/scripts/lib" "$repo_root/locks"
 cp "$source_repo/scripts/run-local-docker-build.sh" "$repo_root/scripts/"
-cp "$source_repo/scripts/lib/"{build-name,prebuilt-apks}.sh "$repo_root/scripts/lib/"
+cp "$source_repo/scripts/lib/"{build-name,builder-image,prebuilt-apks}.sh "$repo_root/scripts/lib/"
 cp "$source_repo/locks/build-wr3000.lock" "$repo_root/locks/"
 wrapper="$repo_root/scripts/run-local-docker-build.sh"
 lock_file="$repo_root/locks/build-wr3000.lock"
@@ -114,6 +126,7 @@ test_prefix='ci-local-build'
 sessions=("$test_prefix-first" "$test_prefix-second" "$test_prefix-fail" "$test_prefix-checksum")
 workspace="$test_prefix-workspace"
 record_file="$tmp_root/docker-record.tsv"
+pull_record="$tmp_root/docker-pulls.txt"
 ln -s "$source_repo/scripts/ci/check-run-local-docker-build.sh" "$fake_docker"
 
 run_wrapper() {
@@ -123,6 +136,7 @@ run_wrapper() {
 
   OPENWRT_DOCKER_BIN="$fake_docker" \
     FAKE_DOCKER_RECORD="$record_file" \
+    FAKE_DOCKER_PULLS="$pull_record" \
     "$wrapper" \
       --no-pull \
       --session "$session" \
@@ -149,13 +163,30 @@ run_wrapper "$second_session" "$second_artifacts" \
   --fresh \
   --no-ccache \
   --rebuild-package mac80211 \
-  --rebuild-package hostapd
+  --rebuild-package local-feeds
 [[ -f "$second_artifacts/firmware.bin" ]] ||
   die 'second build did not copy its timestamped artifact bundle'
 [[ -f "$first_artifacts/firmware.bin" ]] ||
   die 'second build replaced the first session artifact bundle'
-grep -Fqx "$second_session"$'\t'"$workspace"$'\t''0'$'\t''1'$'\t''mac80211,hostapd' "$record_file" ||
+grep -Fqx "$second_session"$'\t'"$workspace"$'\t''0'$'\t''1'$'\t''mac80211,local-feeds' "$record_file" ||
   die 'fresh, no-ccache, or repeated rebuild package selection was not propagated'
+
+# The wrapper always appends --no-pull; call it directly to exercise pulls.
+OPENWRT_DOCKER_BIN="$fake_docker" FAKE_DOCKER_RECORD="$record_file" \
+  FAKE_DOCKER_PULLS="$pull_record" \
+  "$wrapper" --session "$test_prefix-pinned" --workspace "$workspace" \
+    --artifact-dir "$tmp_root/artifacts-pinned" --cache-dir "$tmp_root/cache" \
+    "$lock_file"
+[[ ! -e "$pull_record" ]] ||
+  die 'locally present digest-pinned builder image was pulled again'
+OPENWRT_DOCKER_BIN="$fake_docker" FAKE_DOCKER_RECORD="$record_file" \
+  FAKE_DOCKER_PULLS="$pull_record" \
+  "$wrapper" --session "$test_prefix-tagged" --workspace "$workspace" \
+    --artifact-dir "$tmp_root/artifacts-tagged" --cache-dir "$tmp_root/cache" \
+    --builder-image example.invalid/builder:latest \
+    "$lock_file"
+grep -Fqx 'example.invalid/builder:latest' "$pull_record" ||
+  die 'tag-only builder image was not pulled'
 
 fail_session="${sessions[2]}"
 fail_artifacts="$tmp_root/artifacts-fail"

@@ -1,0 +1,4 @@
+# Package versions come from the dated snapshot.ubuntu.com archive selected by
+# UBUNTU_SNAPSHOT in docker/Dockerfile.ec2, so per-package pins are redundant.
+ignored:
+  - DL3008

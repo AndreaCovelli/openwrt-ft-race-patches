@@ -28,7 +28,7 @@ Options:
   --builder-id ID           Builder image identity. Required.
   --fresh                   Replace the exact workspace and run a full build.
   --rebuild-package NAME    Force an incremental package rebuild. Repeatable;
-                            NAME is mac80211, hostapd, or all.
+                            NAME is mac80211, local-feeds, or all.
   --help                    Show this message.
 
 Environment equivalents are BUILD_ID, WORKSPACE_ID, BUILDER_ID, FRESH, and
@@ -411,14 +411,37 @@ append_extra_config() {
   done
 }
 
-write_ccache_config() {
-  if [[ "$USE_CCACHE_MODE" == '1' ]]; then
-    printf 'CONFIG_DEVEL=y\n' >>"$OPENWRT_DIR/.config"
-    printf 'CONFIG_CCACHE=y\n' >>"$OPENWRT_DIR/.config"
-    printf 'CONFIG_CCACHE_DIR="%s"\n' "$CCACHE_DIR" >>"$OPENWRT_DIR/.config"
-  else
-    printf '# CONFIG_CCACHE is not set\n' >>"$OPENWRT_DIR/.config"
-  fi
+write_build_options_config() {
+  {
+    # BUILD_LOG keeps per-package compiler output in logs/ for diagnosis.
+    printf 'CONFIG_DEVEL=y\n'
+    printf 'CONFIG_BUILD_LOG=y\n'
+    if [[ "$USE_CCACHE_MODE" == '1' ]]; then
+      printf 'CONFIG_CCACHE=y\n'
+      printf 'CONFIG_CCACHE_DIR="%s"\n' "$CCACHE_DIR"
+    else
+      printf '# CONFIG_CCACHE is not set\n'
+    fi
+  } >>"$OPENWRT_DIR/.config"
+}
+
+toolchain_config_digest() {
+  awk '/^CONFIG_(GCC|BINUTILS|LIBC|USE_|EXTERNAL_|TOOLCHAIN|TARGET_OPTIMIZATION|TARGET_SUFFIX|CPU_TYPE|ARCH|TARGET_ARCH)/' \
+    "$OPENWRT_DIR/.config" | sha256sum | awk '{print $1}'
+}
+
+configure_ccache_environment() {
+  [[ "$USE_CCACHE_MODE" == '1' ]] || return 0
+
+  # A fresh tree rebuilds the cross-compiler, so ccache's default mtime check
+  # misses every target object. The pinned OpenWrt tree, builder image, and
+  # toolchain configuration determine the compilers instead.
+  local toolchain_digest
+  toolchain_digest="$(toolchain_config_digest)"
+  export CCACHE_COMPILERCHECK="string:openwrt=$OPENWRT_REF;builder=$BUILDER_ID;toolchain=$toolchain_digest"
+  # Debug-info objects otherwise hash the workspace path.
+  export CCACHE_NOHASHDIR=1
+  log "ccache compiler check: $CCACHE_COMPILERCHECK"
 }
 
 extract_world() {
@@ -490,7 +513,7 @@ state_entry() {
 }
 
 write_compatibility_manifest() {
-  local i index entry name path expected
+  local i index entry name path file url sha256
 
   {
     state_entry builder_id "$BUILDER_ID"
@@ -512,8 +535,6 @@ write_compatibility_manifest() {
     state_entry openwrt.ref "$OPENWRT_REF"
     state_entry openwrt.repo_url "$OPENWRT_REPO_URL"
     state_entry openwrt.tag "${OPENWRT_TAG:-}"
-    state_entry reference_manifest.path "$REFERENCE_MANIFEST"
-    state_entry reference_manifest.sha256 "$(sha256sum "$REFERENCE_MANIFEST_ABS" | awk '{print $1}')"
     state_entry state_schema "$WORKSPACE_STATE_SCHEMA"
     state_entry subtarget "$SUBTARGET"
     state_entry target "$TARGET"
@@ -534,26 +555,15 @@ write_compatibility_manifest() {
       done
     fi
 
-    if declare -p MANIFEST_BUILTIN_PACKAGE_NAMES >/dev/null 2>&1; then
-      local -n builtin_package_names=MANIFEST_BUILTIN_PACKAGE_NAMES
-      for i in "${!builtin_package_names[@]}"; do
-        printf -v index '%03d' "$i"
-        state_entry "manifest_builtin_package.$index" "${builtin_package_names[$i]}"
-      done
-    fi
-
     if declare -p LOCAL_FEEDS >/dev/null 2>&1; then
       local -n local_feeds=LOCAL_FEEDS
       for i in "${!local_feeds[@]}"; do
         entry="${local_feeds[$i]}"
         name="${entry%%:*}"
         path="${entry#*:}"
-        expected="$(local_feed_expected_digest "$name")" ||
-          die "LOCAL_FEED_SHA256S is missing digest for local feed: $name"
         printf -v index '%03d' "$i"
         state_entry "local_feed.$index.name" "$name"
         state_entry "local_feed.$index.path" "$path"
-        state_entry "local_feed.$index.sha256" "$expected"
       done
     fi
 
@@ -568,21 +578,45 @@ write_compatibility_manifest() {
     if declare -p PREBUILT_APKS >/dev/null 2>&1; then
       local -n prebuilt_apks=PREBUILT_APKS
       for i in "${!prebuilt_apks[@]}"; do
+        prebuilt_apk_parse_entry "${prebuilt_apks[$i]}" name file url sha256 ||
+          die 'invalid PREBUILT_APKS entry'
         printf -v index '%03d' "$i"
-        state_entry "prebuilt_apk.$index" "${prebuilt_apks[$i]}"
+        state_entry "prebuilt_apk.$index.name" "$name"
       done
     fi
   } | sort
 }
 
-write_success_state() {
-  local i index
+# Content digests that can change without replacing the workspace. A changed
+# value selects a targeted package rebuild instead of a fresh build.
+write_build_state() {
+  local i index entry name expected
 
   state_entry final_config_sha256 "$(sha256sum "$OPENWRT_DIR/.config" | awk '{print $1}')"
   for i in "${!PINNED_PATCH_SHA256S[@]}"; do
     printf -v index '%03d' "$i"
     state_entry "patch.$index.sha256" "${PINNED_PATCH_SHA256S[$i]}"
   done
+
+  if declare -p LOCAL_FEEDS >/dev/null 2>&1; then
+    local -n state_local_feeds=LOCAL_FEEDS
+    for i in "${!state_local_feeds[@]}"; do
+      entry="${state_local_feeds[$i]}"
+      name="${entry%%:*}"
+      expected="$(local_feed_expected_digest "$name")" ||
+        die "LOCAL_FEED_SHA256S is missing digest for local feed: $name"
+      printf -v index '%03d' "$i"
+      state_entry "local_feed.$index.sha256" "$expected"
+    done
+  fi
+
+  if declare -p PREBUILT_APKS >/dev/null 2>&1; then
+    local -n state_prebuilt_apks=PREBUILT_APKS
+    for i in "${!state_prebuilt_apks[@]}"; do
+      printf -v index '%03d' "$i"
+      state_entry "prebuilt_apk.$index" "${state_prebuilt_apks[$i]}"
+    done
+  fi
   state_entry state_schema "$WORKSPACE_STATE_SCHEMA"
 }
 
@@ -634,9 +668,6 @@ patch_package_for_destination() {
   case "$1" in
     package/kernel/mac80211/*)
       printf 'mac80211\n'
-      ;;
-    package/network/services/hostapd/*)
-      printf 'hostapd\n'
       ;;
     *)
       return 1
@@ -754,17 +785,33 @@ if [[ -n "${REBUILD_PACKAGES:-}" ]]; then
   read -r -a rebuild_package_env_args <<<"${REBUILD_PACKAGES//,/ }"
   REBUILD_PACKAGE_ARGS+=("${rebuild_package_env_args[@]}")
 fi
+LOCAL_FEED_PACKAGE_PATHS=()
+if declare -p LOCAL_FEED_INSTALLS >/dev/null 2>&1; then
+  declare -n lock_local_feed_installs=LOCAL_FEED_INSTALLS
+  for entry in "${lock_local_feed_installs[@]}"; do
+    LOCAL_FEED_PACKAGE_PATHS+=("package/feeds/${entry%%:*}/${entry#*:}")
+  done
+  unset -n lock_local_feed_installs
+fi
+
 for rebuild_selector in "${REBUILD_PACKAGE_ARGS[@]}"; do
   case "$rebuild_selector" in
-    mac80211|hostapd)
-      REQUESTED_REBUILDS["$rebuild_selector"]=1
+    mac80211)
+      REQUESTED_REBUILDS[mac80211]=1
+      ;;
+    local-feeds)
+      ((${#LOCAL_FEED_PACKAGE_PATHS[@]} > 0)) ||
+        die 'local-feeds rebuild requested, but the lock has no LOCAL_FEED_INSTALLS'
+      REQUESTED_REBUILDS[local-feeds]=1
       ;;
     all)
       REQUESTED_REBUILDS[mac80211]=1
-      REQUESTED_REBUILDS[hostapd]=1
+      if ((${#LOCAL_FEED_PACKAGE_PATHS[@]} > 0)); then
+        REQUESTED_REBUILDS[local-feeds]=1
+      fi
       ;;
     *)
-      die "unsupported rebuild package: $rebuild_selector (expected mac80211, hostapd, or all)"
+      die "unsupported rebuild package: $rebuild_selector (expected mac80211, local-feeds, or all)"
       ;;
   esac
 done
@@ -810,14 +857,6 @@ if ((FRESH_MODE)) && [[ -e "$BUILD_ROOT" ]]; then
   rm -rf -- "$BUILD_ROOT"
 fi
 
-if [[ -e "$BUILD_ROOT" ]]; then
-  [[ -d "$BUILD_ROOT" && ! -L "$BUILD_ROOT" ]] ||
-    die "workspace path is not a safe directory: $BUILD_ROOT"
-  BUILD_MODE='incremental'
-else
-  BUILD_MODE='full'
-fi
-
 OPENWRT_DIR="$BUILD_ROOT/openwrt"
 REPORT_DIR="$BUILD_ROOT/reports"
 OUTPUT_DIR="$BUILD_ROOT/output"
@@ -825,10 +864,29 @@ METADATA_DIR="$OUTPUT_DIR/metadata"
 LOG_DIR="$OUTPUT_DIR/logs"
 BUILD_LOG="$LOG_DIR/build.log"
 OPENWRT_LOG_OUTPUT_DIR="$LOG_DIR/openwrt"
-WORKSPACE_STATE_SCHEMA='1'
+WORKSPACE_STATE_SCHEMA='2'
 STATE_DIR="$BUILD_ROOT/.openwrt-ft-state"
 COMPATIBILITY_FILE="$STATE_DIR/compatibility.tsv"
+# prepared.tsv is written once a full build has fixed its inputs; a failed
+# full build can then resume instead of being replaced.
+PREPARED_FILE="$STATE_DIR/prepared.tsv"
 SUCCESS_FILE="$STATE_DIR/last-success.tsv"
+
+if [[ -e "$BUILD_ROOT" ]]; then
+  [[ -d "$BUILD_ROOT" && ! -L "$BUILD_ROOT" ]] ||
+    die "workspace path is not a safe directory: $BUILD_ROOT"
+  if [[ -f "$SUCCESS_FILE" ]]; then
+    BUILD_MODE='incremental'
+    REFERENCE_STATE_FILE="$SUCCESS_FILE"
+  elif [[ -f "$PREPARED_FILE" ]]; then
+    BUILD_MODE='resume'
+    REFERENCE_STATE_FILE="$PREPARED_FILE"
+  else
+    die "workspace has no compatible state marker: $BUILD_ROOT; rerun with --fresh"
+  fi
+else
+  BUILD_MODE='full'
+fi
 
 MAKE_JOBS="${MAKE_JOBS:-$(nproc)}"
 DOWNLOAD_JOBS="${DOWNLOAD_JOBS:-$DEFAULT_DOWNLOAD_JOBS}"
@@ -844,8 +902,8 @@ fi
 declare -A REBUILD_PACKAGES_SET=()
 REBUILT_PACKAGES=()
 
-if [[ "$BUILD_MODE" == 'incremental' ]]; then
-  [[ -f "$COMPATIBILITY_FILE" && -f "$SUCCESS_FILE" ]] ||
+if [[ "$BUILD_MODE" != 'full' ]]; then
+  [[ -f "$COMPATIBILITY_FILE" ]] ||
     die "workspace has no compatible state marker: $BUILD_ROOT; rerun with --fresh"
 
   current_compatibility="$(mktemp "$WORK_ROOT/.openwrt-ft-compatibility.XXXXXXXX")"
@@ -858,10 +916,10 @@ if [[ "$BUILD_MODE" == 'incremental' ]]; then
   fi
   rm -f -- "$current_compatibility"
 
-  stored_schema="$(state_value "$SUCCESS_FILE" state_schema)" ||
-    die "workspace success state is missing state_schema: $SUCCESS_FILE; rerun with --fresh"
+  stored_schema="$(state_value "$REFERENCE_STATE_FILE" state_schema)" ||
+    die "workspace build state is missing state_schema: $REFERENCE_STATE_FILE; rerun with --fresh"
   [[ "$stored_schema" == "$WORKSPACE_STATE_SCHEMA" ]] ||
-    die "workspace success state schema is $stored_schema, expected $WORKSPACE_STATE_SCHEMA; rerun with --fresh"
+    die "workspace build state schema is $stored_schema, expected $WORKSPACE_STATE_SCHEMA; rerun with --fresh"
 
   [[ -d "$OPENWRT_DIR/.git" && -f "$OPENWRT_DIR/.config" ]] ||
     die "workspace checkout is incomplete: $BUILD_ROOT; rerun with --fresh"
@@ -890,14 +948,14 @@ if [[ "$BUILD_MODE" == 'incremental' ]]; then
       die "tag $OPENWRT_TAG does not resolve to $OPENWRT_REF"
   fi
 
-  stored_config_sha="$(state_value "$SUCCESS_FILE" final_config_sha256)" ||
-    die "workspace success state is missing final_config_sha256; rerun with --fresh"
+  stored_config_sha="$(state_value "$REFERENCE_STATE_FILE" final_config_sha256)" ||
+    die "workspace build state is missing final_config_sha256; rerun with --fresh"
   verify_sha256 "$OPENWRT_DIR/.config" "$stored_config_sha"
 
   for i in "${!PINNED_PATCH_SHA256S[@]}"; do
     printf -v index '%03d' "$i"
-    previous_patch_sha="$(state_value "$SUCCESS_FILE" "patch.$index.sha256")" ||
-      die "workspace success state is missing patch.$index.sha256; rerun with --fresh"
+    previous_patch_sha="$(state_value "$REFERENCE_STATE_FILE" "patch.$index.sha256")" ||
+      die "workspace build state is missing patch.$index.sha256; rerun with --fresh"
     patch_dest_abs="$OPENWRT_DIR/${PINNED_PATCH_DESTS[$i]}"
     [[ -f "$patch_dest_abs" ]] ||
       die "workspace patch destination is missing: ${PINNED_PATCH_DESTS[$i]}; rerun with --fresh"
@@ -913,6 +971,23 @@ if [[ "$BUILD_MODE" == 'incremental' ]]; then
       REBUILD_PACKAGES_SET["$changed_package"]=1
     fi
   done
+
+  current_state="$(mktemp "$WORK_ROOT/.openwrt-ft-state-current.XXXXXXXX")"
+  write_build_state >"$current_state"
+  changed_local_inputs="$(
+    awk -F '\t' '
+      NR == FNR { previous[$1] = $2; next }
+      $1 ~ /^(local_feed\.[0-9]+\.sha256|prebuilt_apk\.[0-9]+)$/ &&
+        (!($1 in previous) || previous[$1] != $2) { print $1 }
+    ' "$REFERENCE_STATE_FILE" "$current_state"
+  )"
+  rm -f -- "$current_state"
+  if [[ -n "$changed_local_inputs" ]]; then
+    ((${#LOCAL_FEED_PACKAGE_PATHS[@]} > 0)) ||
+      die "local feed or prebuilt APK inputs changed without LOCAL_FEED_INSTALLS; rerun with --fresh"
+    log "Changed local package inputs: ${changed_local_inputs//$'\n'/, }"
+    REBUILD_PACKAGES_SET[local-feeds]=1
+  fi
 fi
 
 for rebuild_selector in "${!REQUESTED_REBUILDS[@]}"; do
@@ -921,14 +996,14 @@ done
 if [[ "$BUILD_MODE" == 'full' ]]; then
   REBUILT_PACKAGES=(all)
 else
-  for rebuild_selector in mac80211 hostapd; do
+  for rebuild_selector in mac80211 local-feeds; do
     if [[ -n "${REBUILD_PACKAGES_SET[$rebuild_selector]:-}" ]]; then
       REBUILT_PACKAGES+=("$rebuild_selector")
     fi
   done
 fi
 
-if [[ "$BUILD_MODE" == 'incremental' ]]; then
+if [[ "$BUILD_MODE" != 'full' ]]; then
   rm -rf -- "$REPORT_DIR" "$OUTPUT_DIR" "$OPENWRT_DIR/logs"
 fi
 mkdir -p "$BUILD_ROOT" "$DL_DIR" "$REPORT_DIR" "$OUTPUT_DIR" "$METADATA_DIR" "$LOG_DIR"
@@ -1021,7 +1096,7 @@ if [[ "$BUILD_MODE" == 'full' ]]; then
   log "Writing device config"
   cp "$CONFIG_FRAGMENT_ABS" "$OPENWRT_DIR/.config"
   append_extra_config
-  write_ccache_config
+  write_build_options_config
 
   (
     cd "$OPENWRT_DIR"
@@ -1056,6 +1131,17 @@ if [[ -s "$REPORT_DIR/world-unselected-package-names.txt" ]]; then
 fi
 
 if [[ "$BUILD_MODE" == 'full' ]]; then
+  state_dir_tmp="$(mktemp -d "$WORK_ROOT/.openwrt-ft-state.XXXXXXXX")"
+  write_compatibility_manifest >"$state_dir_tmp/compatibility.tsv"
+  write_build_state >"$state_dir_tmp/prepared.tsv"
+  [[ ! -e "$STATE_DIR" ]] ||
+    die "workspace state unexpectedly appeared during the build: $STATE_DIR"
+  mv "$state_dir_tmp" "$STATE_DIR"
+fi
+
+configure_ccache_environment
+
+if [[ "$BUILD_MODE" != 'incremental' ]]; then
   log "Downloading sources"
   (
     cd "$OPENWRT_DIR"
@@ -1063,29 +1149,31 @@ if [[ "$BUILD_MODE" == 'full' ]]; then
   )
 fi
 
-if [[ "$BUILD_MODE" == 'incremental' ]]; then
+if [[ "$BUILD_MODE" != 'full' ]]; then
   for rebuild_selector in "${REBUILT_PACKAGES[@]}"; do
     case "$rebuild_selector" in
       mac80211)
-        rebuild_path='package/kernel/mac80211'
+        rebuild_paths=('package/kernel/mac80211')
         ;;
-      hostapd)
-        rebuild_path='package/network/services/hostapd'
+      local-feeds)
+        rebuild_paths=("${LOCAL_FEED_PACKAGE_PATHS[@]}")
         ;;
       *)
         die "internal error: unsupported incremental package: $rebuild_selector"
         ;;
     esac
-    log "Cleaning incremental package: $rebuild_selector"
-    (
-      cd "$OPENWRT_DIR"
-      make DL_DIR="$DL_DIR" "$rebuild_path/clean"
-    )
-    log "Compiling incremental package: $rebuild_selector"
-    (
-      cd "$OPENWRT_DIR"
-      make DL_DIR="$DL_DIR" -j"$MAKE_JOBS" "$rebuild_path/compile"
-    )
+    for rebuild_path in "${rebuild_paths[@]}"; do
+      log "Cleaning incremental package: $rebuild_path"
+      (
+        cd "$OPENWRT_DIR"
+        make DL_DIR="$DL_DIR" "$rebuild_path/clean"
+      )
+      log "Compiling incremental package: $rebuild_path"
+      (
+        cd "$OPENWRT_DIR"
+        make DL_DIR="$DL_DIR" -j"$MAKE_JOBS" "$rebuild_path/compile"
+      )
+    done
   done
 
   ARTIFACT_DIR="$OPENWRT_DIR/bin/targets/$TARGET/$SUBTARGET"
@@ -1227,22 +1315,11 @@ if ((STRICT_MANIFEST_MODE)) && (
   die "built manifest differs from reference; see $REPORT_DIR and $REPORT_DIR/build-summary.txt"
 fi
 
-if [[ "$BUILD_MODE" == 'full' ]]; then
-  state_dir_tmp="$(mktemp -d "$WORK_ROOT/.openwrt-ft-state.XXXXXXXX")"
-  write_compatibility_manifest >"$state_dir_tmp/compatibility.tsv"
-  write_success_state >"$state_dir_tmp/last-success.tsv"
-  cp "$state_dir_tmp/compatibility.tsv" "$METADATA_DIR/workspace-compatibility.tsv"
-  cp "$state_dir_tmp/last-success.tsv" "$METADATA_DIR/workspace-last-success.tsv"
-  [[ ! -e "$STATE_DIR" ]] ||
-    die "workspace state unexpectedly appeared during the build: $STATE_DIR"
-  mv "$state_dir_tmp" "$STATE_DIR"
-else
-  success_tmp="$(mktemp "$WORK_ROOT/.openwrt-ft-success.XXXXXXXX")"
-  write_success_state >"$success_tmp"
-  cp "$COMPATIBILITY_FILE" "$METADATA_DIR/workspace-compatibility.tsv"
-  cp "$success_tmp" "$METADATA_DIR/workspace-last-success.tsv"
-  mv "$success_tmp" "$SUCCESS_FILE"
-fi
+success_tmp="$(mktemp "$WORK_ROOT/.openwrt-ft-success.XXXXXXXX")"
+write_build_state >"$success_tmp"
+cp "$COMPATIBILITY_FILE" "$METADATA_DIR/workspace-compatibility.tsv"
+cp "$success_tmp" "$METADATA_DIR/workspace-last-success.tsv"
+mv "$success_tmp" "$SUCCESS_FILE"
 
 log "Build complete"
 log "Output directory: $OUTPUT_DIR"
