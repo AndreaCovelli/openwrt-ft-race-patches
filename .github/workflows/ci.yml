@@ -47,7 +47,7 @@ jobs:
         with:
           # Keep mise compatible with the provenance metadata in mise.lock.
           version: &mise_version 2026.10.8
-          install_args: "actionlint hadolint shellcheck"
+          install_args: "github:kjanat/actionlint hadolint shellcheck"
 
       - name: Validate shell scripts and workflow
         env:
