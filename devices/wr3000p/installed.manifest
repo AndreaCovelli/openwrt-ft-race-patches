@@ -103,7 +103,6 @@ libuclient20201210 - 2026.06.07~daad21fa-r1
 libucode20230711 - 2026.01.16~85922056-r1
 libudebug - 2026.01.16~875e1a7a
 libustream-mbedtls20201210 - 2026.03.01~99f1c0db-r1
-lldpd - 1.0.20-r1
 logd - 2025.10.30~6f78fa49-r1
 luci - 26.051.07599~e08a56d
 luci-app-attendedsysupgrade - 26.087.74782~b3f192d
