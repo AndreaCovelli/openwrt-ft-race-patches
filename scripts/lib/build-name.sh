@@ -61,16 +61,70 @@ openwrt_default_build_name() {
     "$timestamp"
 }
 
+# Source and ImageBuilder workspaces hold different trees, so each build
+# method gets its own default workspace.
 openwrt_default_workspace_name() {
+  local build_method="${1:-source}"
   local device_id="${DEVICE_ID:-}"
+  local suffix
 
   openwrt_build_name_require_component DEVICE_ID "$device_id" || return 1
-  printf 'openwrt-ft-%s-dev\n' "$device_id"
+  case "$build_method" in
+    source) suffix='dev' ;;
+    imagebuilder) suffix='ib' ;;
+    *)
+      openwrt_build_name_die "unsupported build method: $build_method (expected source or imagebuilder)" ||
+        return 1
+      ;;
+  esac
+  printf 'openwrt-ft-%s-%s\n' "$device_id" "$suffix"
 }
 
-openwrt_default_workspace_name_from_lock() {
+# Print the lock's literal DEFAULT_BUILD_METHOD, or source when it is unset.
+openwrt_default_build_method_from_lock() {
   local lock_file="$1"
   local line value
+  local build_method='source'
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" =~ ^[[:space:]]+DEFAULT_BUILD_METHOD= ]]; then
+      openwrt_build_name_die "unsupported indented lock assignment for build method: $line" ||
+        return 1
+    fi
+
+    case "$line" in
+      DEFAULT_BUILD_METHOD=\'*\')
+        value="${line#*=}"
+        value="${value#\'}"
+        value="${value%\'}"
+        build_method="$value"
+        ;;
+      DEFAULT_BUILD_METHOD=*)
+        openwrt_build_name_die "unsupported lock assignment for build method: $line" ||
+          return 1
+        ;;
+    esac
+  done <"$lock_file"
+
+  case "$build_method" in
+    source|imagebuilder) printf '%s\n' "$build_method" ;;
+    *)
+      openwrt_build_name_die "unsupported DEFAULT_BUILD_METHOD: $build_method" ||
+        return 1
+      ;;
+  esac
+}
+
+# Arguments: lock file and optional build method. Without a method, the
+# lock's DEFAULT_BUILD_METHOD selects the workspace.
+openwrt_default_workspace_name_from_lock() {
+  local lock_file="$1"
+  local build_method="${2:-}"
+  local line value
+
+  if [[ -z "$build_method" ]]; then
+    build_method="$(openwrt_default_build_method_from_lock "$lock_file")" || return 1
+  fi
 
   (
     unset DEVICE_ID
@@ -95,7 +149,7 @@ openwrt_default_workspace_name_from_lock() {
       esac
     done <"$lock_file"
 
-    openwrt_default_workspace_name
+    openwrt_default_workspace_name "$build_method"
   )
 }
 

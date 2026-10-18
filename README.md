@@ -38,8 +38,9 @@ Build verification:
 - Default build/session artifact bundle names follow:
   `openwrt-ft-<device-id>-<openwrt-version>-<variant>-<utc-build-id>`.
   The actual OpenWrt firmware image filenames are left unchanged.
-- Local Docker builds reuse `build/openwrt-ft-<device-id>-dev` by default,
-  while every local session still gets its own timestamped
+- Local Docker builds reuse `build/openwrt-ft-<device-id>-ib` for
+  ImageBuilder builds and `build/openwrt-ft-<device-id>-dev` for source
+  builds by default, while every local session still gets its own timestamped
   `openwrt-artifacts/<session>/` bundle. Direct builds use the same stable
   workspace default. Use `--workspace <name>` for an independent tree for the
   same device.
@@ -64,7 +65,7 @@ Build verification:
   `GITHUB_TOKEN` if the GitHub CLI token is unavailable. The EC2 orchestrator
   downloads those assets locally and copies them into the remote download cache
   so GitHub repository credentials are not sent to the remote host.
-- The builder selects captured `apk world` packages in addition to the device
+- Source builds select captured `apk world` packages in addition to the device
   `diffconfig`. It maps ABI-suffixed APK names to Kconfig symbols using the
   pinned OpenWrt package metadata, then runs `make defconfig` and checks that
   each required package is selected for the image. Unavailable names or
@@ -79,6 +80,63 @@ Build verification:
   Missing `apk world` package names are always fatal, even when strict
   manifest checking is disabled.
 
+Build methods:
+- `--build-method imagebuilder` is the default for the stable locks, which set
+  `DEFAULT_BUILD_METHOD='imagebuilder'`. It downloads the release's official
+  SDK and ImageBuilder, rebuilds only the packages that carry a pinned patch
+  in the SDK, and assembles the image with the ImageBuilder from the official
+  release packages, the SDK-built `IMAGEBUILDER_PATCHED_PACKAGES`, and the
+  lock's `PREBUILT_APKS`. Only `kmod-mac80211` is replaced; the kernel, its
+  other modules, and every other package are the official release builds.
+- `--build-method source` builds the whole tree from the pinned OpenWrt
+  checkout and feeds, as before. Locks without `DEFAULT_BUILD_METHOD`,
+  including `locks/build-wr3000e-main.lock`, use it. Use it for initramfs
+  images, for patches outside mac80211, and for local feed packages that do
+  not have a `PREBUILT_APKS` entry.
+- ImageBuilder builds produce only the sysupgrade image; `initramfs_image` and
+  `initramfs_sha256` are empty in `build-summary.txt`.
+- The lock pins `SDK_URL`, `SDK_SHA256`, `IMAGEBUILDER_URL`,
+  `IMAGEBUILDER_SHA256`, and every apk repository index the ImageBuilder
+  uses in `IMAGEBUILDER_REPOSITORIES` (`url|sha256`). The build verifies the
+  SDK feed commits against the lock's OpenWrt and feed pins, the ImageBuilder
+  repository list against the pinned index URLs, and the SDK's mac80211
+  package options against the release `.config` shipped in the ImageBuilder.
+  It seeds apk with the pinned indexes, which keep package signature checks
+  enabled, and fails if an index changes during the image build.
+- OpenWrt rebuilds release indexes when it republishes packages. A build then
+  fails before compiling with a checksum mismatch for the index URL until the
+  lock is refreshed with `./scripts/pin-imagebuilder.sh locks/<device>.lock`
+  (use `--dry-run` to print the new pins first). The script reads the
+  release's `sha256sums`, `profiles.json`, and `feeds.buildinfo`, requires
+  them to match the lock's release, target, device, and feed pins, and
+  rewrites only the ImageBuilder assignments.
+- The SDK packages its prebuilt kernel modules before compiling mac80211 so
+  OpenWrt's package dependency check passes; only the patched packages reach
+  the image. After the image build, every file of each injected package must
+  be byte-identical in the image root, so apk cannot silently pick the equally
+  versioned official package.
+- The image kernel must equal the ImageBuilder's kernel package. The
+  reference manifest's `kernel` line is recorded as
+  `reference_kernel_version` and is not counted as a version mismatch;
+  `image_kernel_version` shows the shipped kernel.
+- The captured `apk world` replaces the ImageBuilder's default package
+  selection: defaults that the world neither lists nor provides are removed.
+  The package list passed to the ImageBuilder is saved as
+  `metadata/imagebuilder-packages.txt`, and the injected packages with their
+  checksums as `metadata/imagebuilder-injected.tsv`.
+- OpenWrt keeps rebuilding a release's package repositories from the release
+  branch after the tag, so an ImageBuilder image installs those newer
+  userland packages (for example LuCI and hostapd revisions) rather than the
+  versions built from the lock's feed commits. The index pins make that set
+  reproducible; the feed pins still describe the SDK source. Expect version
+  drift against a reference manifest captured from a source-built image, and
+  use `--no-strict-manifest` for that first ImageBuilder build; strict
+  checking applies again once the reference is refreshed from a router that
+  runs an ImageBuilder image.
+- Index files are cached by checksum under `cache/imagebuilder/indexes/`, and
+  apk's package downloads under `cache/imagebuilder/apk-cache/`, shared by
+  builds with the same index pins.
+
 ASU-like latest release preparation:
 - `scripts/prepare-openwrt-upgrade.sh` follows the attended-sysupgrade style of
   selecting the latest available release for the router's current stable branch
@@ -89,7 +147,9 @@ ASU-like latest release preparation:
   It validates target/profile availability against the ASU server, verifies the
   router board is supported by that profile, updates only the selected stable
   lock file to exact OpenWrt and release feed commits, refreshes that device's
-  package baseline, then starts `scripts/run-ec2-build.sh` with
+  package baseline, refreshes the lock's ImageBuilder pins with
+  `scripts/pin-imagebuilder.sh` when it has them, then starts
+  `scripts/run-ec2-build.sh` with
   `--no-strict-manifest` for the transition build. The build still fails if any
   package from the router's captured `apk world` is missing from the image.
 - Use `--dry-run` to print the selected release, lock changes, package baseline
@@ -183,15 +243,24 @@ To add another router:
 3. Create a `devices/<name>/` directory for those files.
 4. Copy one of the files in `locks/` and update `CONFIG_FRAGMENT`, `WORLD_SOURCE`, `REFERENCE_MANIFEST`, and `DEVICE_ID`.
 5. Set `ARTIFACT_VARIANT` to a short intent label such as `patched`.
-6. Run `./scripts/run-local-docker-build.sh locks/your-device.lock`.
+6. Run `./scripts/pin-imagebuilder.sh locks/your-device.lock` so the
+   ImageBuilder pins match the new target.
+7. Run `./scripts/run-local-docker-build.sh locks/your-device.lock`.
 
 Local Docker builds:
 - `scripts/run-local-docker-build.sh` runs the same pinned builder image used by
   the EC2 wrapper, mounts this repo at `/workspace`, and writes artifacts to
   `openwrt-artifacts/<build>/`.
-- The first build seeds `build/openwrt-ft-<device-id>-dev`; later compatible
-  builds reuse its OpenWrt checkout and compiled tree. The workspace is locked
-  against concurrent builds and is retained after success or failure.
+- The first build seeds the workspace; later compatible builds reuse its
+  OpenWrt checkout and compiled tree, or its extracted SDK and ImageBuilder.
+  The workspace is locked against concurrent builds and is retained after
+  success or failure.
+- The wrapper mounts the selected workspace at `/build` and sets
+  `WORKSPACE_PATH=/build`, so every workspace and device compiles under the
+  same absolute path and shares ccache entries. EC2 builds use the same mount.
+- Source builds clone OpenWrt and every feed as partial clones
+  (`--filter=blob:none`) at the pinned commits: full history for version
+  stamps, but file contents only for the checked-out tree.
 - `--fresh` safely replaces only the selected workspace and performs a full
   build. Use `--workspace <name>` when one device needs multiple independent
   build trees.
@@ -213,7 +282,13 @@ Local Docker builds:
   each build instead. The diagnostic lists the changed keys; rerun with
   `--fresh` only after confirming the replacement is intended. Workspaces
   created by older versions of the builder, including every workspace from
-  before state schema 2, require one fresh build.
+  before state schema 3 (which added the build method and the fixed
+  workspace path), require one fresh build. `--fresh` clears the workspace
+  contents in place, so it also works on the mounted directory.
+- ImageBuilder workspaces rebuild the image from the pristine ImageBuilder
+  package directory on every run. A patch change cleans and recompiles the SDK
+  mac80211 package; `--rebuild-package local-feeds` is rejected because
+  prebuilt APKs are injected directly.
 - Builds enable OpenWrt's `CONFIG_BUILD_LOG`, so each package's compiler output
   is copied to `logs/openwrt/` in the artifact directory, including after a
   failure.
@@ -225,12 +300,13 @@ Local Docker builds:
   `CCACHE_MAXSIZE` of `20G`. Use `--ccache-maxsize <size>` to override the
   limit or `--no-ccache` for a cache-free workspace (an existing workspace
   with the other ccache mode must be replaced with `--fresh`).
-- The builder keys ccache on the OpenWrt commit, builder image, and toolchain
-  configuration rather than compiler timestamps, and ignores the workspace
-  path. A fresh workspace rebuilds its cross-compiler, so the default mtime
-  check would otherwise miss every cached object. Target objects that embed
-  absolute paths through OpenWrt's prefix maps still differ between
-  workspaces, so most reuse comes from rebuilding the same workspace.
+- Source builds key ccache on the OpenWrt commit, builder image, and
+  toolchain configuration rather than compiler timestamps; ImageBuilder
+  builds key it on the SDK checksum and builder image. A fresh workspace
+  rebuilds or re-extracts its cross-compiler, so the default mtime check would
+  otherwise miss every cached object. The fixed `/build` path keeps objects
+  that embed absolute paths identical across workspaces, so a fresh
+  workspace for the same pins reuses the cache.
 - The container runs as the invoking user's UID and GID, so the workspace,
   cache, and artifacts stay owned by that user. UIDs other than the image's
   UID 1000 get `HOME=/tmp` inside the container.

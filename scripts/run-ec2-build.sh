@@ -37,6 +37,7 @@ Options:
   --download-jobs N         Pass through to orchestrate-ec2-build.sh.
   --strict-manifest         Pass through. Default behavior.
   --no-strict-manifest      Pass through.
+  --build-method METHOD     Pass through: source or imagebuilder.
   --include-untracked       Pass through.
   --platform PLATFORM       Docker platform. Default: linux/amd64.
   --builder-base-image REF  Docker base image override.
@@ -104,6 +105,7 @@ REBUILD_BUILDER_IMAGE='0'
 MAKE_JOBS=''
 DOWNLOAD_JOBS=''
 STRICT_ARG=()
+BUILD_METHOD_ARG=()
 INCLUDE_UNTRACKED='0'
 BUILDER_PLATFORM='linux/amd64'
 BUILDER_BASE_IMAGE=''
@@ -192,6 +194,15 @@ while [[ $# -gt 0 ]]; do
     --no-strict-manifest)
       STRICT_ARG=(--no-strict-manifest)
       shift
+      ;;
+    --build-method)
+      [[ $# -ge 2 ]] || die "--build-method requires a value"
+      case "$2" in
+        source|imagebuilder) ;;
+        *) die "--build-method must be source or imagebuilder" ;;
+      esac
+      BUILD_METHOD_ARG=(--build-method "$2")
+      shift 2
       ;;
     --include-untracked)
       INCLUDE_UNTRACKED='1'
@@ -561,6 +572,9 @@ if [[ -n "$UBUNTU_SNAPSHOT" ]]; then
 fi
 if [[ ${#STRICT_ARG[@]} -gt 0 ]]; then
   orchestrator_args+=("${STRICT_ARG[@]}")
+fi
+if [[ ${#BUILD_METHOD_ARG[@]} -gt 0 ]]; then
+  orchestrator_args+=("${BUILD_METHOD_ARG[@]}")
 fi
 if [[ "$INCLUDE_UNTRACKED" == '1' ]]; then
   orchestrator_args+=(--include-untracked)

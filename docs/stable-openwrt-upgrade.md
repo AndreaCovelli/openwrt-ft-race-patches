@@ -105,6 +105,8 @@ This command:
 - updates only the selected stable lock file to exact OpenWrt and release feed
   commits;
 - refreshes that device's package baseline;
+- refreshes the lock's SDK, ImageBuilder, and repository index pins with
+  `scripts/pin-imagebuilder.sh`, and stops if that fails;
 - starts `scripts/run-ec2-build.sh` with `--no-strict-manifest` for the
   transition build.
 
@@ -123,7 +125,11 @@ local feed `PKG_SOURCE` and `PKG_HASH`, then rerun. A dry run reports the
 mismatch as a warning, and `--allow-prebuilt-apk-mismatch` deliberately keeps
 the old APK.
 
-During the build, captured world packages are added to the device configuration
+The stable locks build with the official SDK and ImageBuilder by default (see
+"Build methods" in the README). The ImageBuilder installs the captured world
+packages in place of its default package selection and records the package
+list in `metadata/imagebuilder-packages.txt`. With `--build-method source`,
+captured world packages are added to the device configuration
 using the pinned OpenWrt package metadata, including the mapping from ABI-suffixed
 APK names to Kconfig symbols. A newly installed package such as `htop` is selected
 even if it was absent from the saved `diffconfig`. The builder rejects packages

@@ -65,3 +65,28 @@ MANIFEST_BUILTIN_PACKAGE_NAMES=(
   'kmod-crypto-acompress'
   'kmod-lib-lzo'
 )
+
+# Build with the official SDK and ImageBuilder by default. The SDK rebuilds
+# only these packages from the patched source; --build-method source builds
+# the whole tree instead.
+DEFAULT_BUILD_METHOD='imagebuilder'
+IMAGEBUILDER_PATCHED_PACKAGES=(
+  'kmod-mac80211'
+)
+
+# Official SDK and ImageBuilder for --build-method imagebuilder. Refresh
+# with scripts/pin-imagebuilder.sh, which rewrites these assignments.
+SDK_URL='https://downloads.openwrt.org/releases/25.12.5/targets/mediatek/filogic/openwrt-sdk-25.12.5-mediatek-filogic_gcc-14.3.0_musl.Linux-x86_64.tar.zst'
+SDK_SHA256='ff4a38a397caa2cfe1c39e18f84ddede14878221b3593c3f2c4cfe24e3ec4c25'
+IMAGEBUILDER_URL='https://downloads.openwrt.org/releases/25.12.5/targets/mediatek/filogic/openwrt-imagebuilder-25.12.5-mediatek-filogic.Linux-x86_64.tar.zst'
+IMAGEBUILDER_SHA256='7fb6cf626582ebcbfb46974da48c1eae577213f38879eaf6b1d982041e843461'
+IMAGEBUILDER_REPOSITORIES=(
+  'https://downloads.openwrt.org/releases/25.12.5/targets/mediatek/filogic/packages/packages.adb|92a21556949408177649e0030f303cbc2771d98386cfe1d5e11a6c200ebc1f72'
+  'https://downloads.openwrt.org/releases/25.12.5/packages/aarch64_cortex-a53/base/packages.adb|f8d23233262d4643f2786df9a58a0330a344f909fa013a74d41fe237eba5c34e'
+  'https://downloads.openwrt.org/releases/25.12.5/targets/mediatek/filogic/kmods/6.12.94-1-5a6c1f71be683ae9980b15d3ce73e24d/packages.adb|d9b1d14591cf0fc5b0a69ea1b618f3312c96e4ac87d013fe1e76aac34867022d'
+  'https://downloads.openwrt.org/releases/25.12.5/packages/aarch64_cortex-a53/luci/packages.adb|1450e795fe3a72ff0deab62de55cbb0e68a47778429b45713fa9fde0dcdeb18a'
+  'https://downloads.openwrt.org/releases/25.12.5/packages/aarch64_cortex-a53/packages/packages.adb|9084b4449e7be6669648f3100a1efb05c8e70566c03b4418591251e03d5baa6b'
+  'https://downloads.openwrt.org/releases/25.12.5/packages/aarch64_cortex-a53/routing/packages.adb|484f59bb4c872f20f4d6e0ddcc91250abb3781e5f89f080d2ed3f8432798984c'
+  'https://downloads.openwrt.org/releases/25.12.5/packages/aarch64_cortex-a53/telephony/packages.adb|d3eaba8b22e9c3453b8114e9797ee424a6320f6b7f13b7d969c321cbdf7a93b9'
+  'https://downloads.openwrt.org/releases/25.12.5/packages/aarch64_cortex-a53/video/packages.adb|b67930939cae488e303b20610993dc9c8669bf38be39fb3e80faf08c3e36556f'
+)

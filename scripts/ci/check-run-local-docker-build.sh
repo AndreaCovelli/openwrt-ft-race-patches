@@ -14,6 +14,9 @@ fake_docker_main() {
   local use_ccache=''
   local fresh=''
   local rebuild_packages=''
+  local build_method=''
+  local workspace_path=''
+  local workspace_mount=''
   local user=''
   local output_dir
 
@@ -45,6 +48,8 @@ fake_docker_main() {
               USE_CCACHE=*) use_ccache="${2#USE_CCACHE=}" ;;
               FRESH=*) fresh="${2#FRESH=}" ;;
               REBUILD_PACKAGES=*) rebuild_packages="${2#REBUILD_PACKAGES=}" ;;
+              BUILD_METHOD=*) build_method="${2#BUILD_METHOD=}" ;;
+              WORKSPACE_PATH=*) workspace_path="${2#WORKSPACE_PATH=}" ;;
             esac
             shift 2
             ;;
@@ -57,6 +62,7 @@ fake_docker_main() {
             [[ $# -ge 2 ]] || die 'fake docker received an incomplete -v option'
             case "$2" in
               *:/workspace) repo="${2%:/workspace}" ;;
+              *:/build) workspace_mount="${2%:/build}" ;;
             esac
             shift 2
             ;;
@@ -78,12 +84,16 @@ fake_docker_main() {
     die 'fake docker did not receive the inspected BUILDER_ID'
   [[ "$user" == "$(id -u):$(id -g)" ]] ||
     die "fake docker did not run as the invoking user: $user"
+  [[ "$workspace_path" == '/build' ]] ||
+    die "fake docker did not receive WORKSPACE_PATH=/build: $workspace_path"
+  [[ "$workspace_mount" == "$repo/build/$workspace_id" && -d "$workspace_mount" ]] ||
+    die "fake docker did not receive the created workspace at /build: $workspace_mount"
 
-  printf '%s\t%s\t%s\t%s\t%s\n' \
-    "$session" "$workspace_id" "$use_ccache" "$fresh" "$rebuild_packages" \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$session" "$workspace_id" "$use_ccache" "$fresh" "$rebuild_packages" "$build_method" \
     >>"$FAKE_DOCKER_RECORD"
 
-  output_dir="$repo/build/$workspace_id/output"
+  output_dir="$workspace_mount/output"
   mkdir -p "$output_dir"
   printf 'test firmware for %s\n' "$session" >"$output_dir/firmware.bin"
 
@@ -154,12 +164,13 @@ run_wrapper "$first_session" "$first_artifacts"
   die 'first build did not copy the artifact'
 [[ -d "$repo_root/build/$workspace" ]] ||
   die 'successful reusable workspace was not retained'
-grep -Fqx "$first_session"$'\t'"$workspace"$'\t''1'$'\t''0'$'\t' "$record_file" ||
-  die 'default build did not propagate stable workspace, default ccache, and builder ID'
+grep -Fqx "$first_session"$'\t'"$workspace"$'\t''1'$'\t''0'$'\t'$'\t''imagebuilder' "$record_file" ||
+  die 'default build did not propagate stable workspace, default ccache, lock build method, and builder ID'
 
 second_session="${sessions[1]}"
 second_artifacts="$tmp_root/artifacts-second"
 run_wrapper "$second_session" "$second_artifacts" \
+  --build-method source \
   --fresh \
   --no-ccache \
   --rebuild-package mac80211 \
@@ -168,8 +179,33 @@ run_wrapper "$second_session" "$second_artifacts" \
   die 'second build did not copy its timestamped artifact bundle'
 [[ -f "$first_artifacts/firmware.bin" ]] ||
   die 'second build replaced the first session artifact bundle'
-grep -Fqx "$second_session"$'\t'"$workspace"$'\t''0'$'\t''1'$'\t''mac80211,local-feeds' "$record_file" ||
-  die 'fresh, no-ccache, or repeated rebuild package selection was not propagated'
+grep -Fqx "$second_session"$'\t'"$workspace"$'\t''0'$'\t''1'$'\t''mac80211,local-feeds'$'\t''source' "$record_file" ||
+  die 'build method, fresh, no-ccache, or repeated rebuild package selection was not propagated'
+
+record_before="$(sha256sum "$record_file")"
+if run_wrapper "$test_prefix-ib-local-feeds" "$tmp_root/artifacts-ib-local-feeds" \
+  --rebuild-package local-feeds >"$tmp_root/ib-local-feeds.log" 2>&1; then
+  die 'ImageBuilder build accepted a local-feeds rebuild'
+fi
+[[ "$(sha256sum "$record_file")" == "$record_before" ]] ||
+  die 'rejected ImageBuilder local-feeds rebuild started a container build'
+
+# Default workspaces are per build method.
+OPENWRT_DOCKER_BIN="$fake_docker" FAKE_DOCKER_RECORD="$record_file" \
+  FAKE_DOCKER_PULLS="$pull_record" \
+  "$wrapper" --no-pull --session "$test_prefix-default-source" \
+    --build-method source \
+    --artifact-dir "$tmp_root/artifacts-default-source" --cache-dir "$tmp_root/cache" \
+    "$lock_file"
+grep -Fq "$test_prefix-default-source"$'\t''openwrt-ft-cudy_wr3000-v1-dev'$'\t' "$record_file" ||
+  die 'source build did not use the -dev default workspace'
+OPENWRT_DOCKER_BIN="$fake_docker" FAKE_DOCKER_RECORD="$record_file" \
+  FAKE_DOCKER_PULLS="$pull_record" \
+  "$wrapper" --no-pull --session "$test_prefix-default-ib" \
+    --artifact-dir "$tmp_root/artifacts-default-ib" --cache-dir "$tmp_root/cache" \
+    "$lock_file"
+grep -Fq "$test_prefix-default-ib"$'\t''openwrt-ft-cudy_wr3000-v1-ib'$'\t' "$record_file" ||
+  die 'ImageBuilder build did not use the -ib default workspace'
 
 # The wrapper always appends --no-pull; call it directly to exercise pulls.
 OPENWRT_DOCKER_BIN="$fake_docker" FAKE_DOCKER_RECORD="$record_file" \

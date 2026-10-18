@@ -54,6 +54,8 @@ scripts/ci/check-upgrade-router-image.sh
 scripts/ci/check-prebuilt-apks.sh
 scripts/ci/check-run-local-docker-build.sh
 scripts/ci/check-incremental-build.sh
+scripts/ci/check-imagebuilder.sh
+scripts/ci/check-pin-imagebuilder.sh
 scripts/ci/check-world-config.sh
 scripts/ci/check-ec2-cleanup.sh
 scripts/ci/check-ec2-fetch.sh
@@ -110,6 +112,17 @@ Do not run those full build or EC2 commands unless the user asked for them.
   upgrade preparation expects tagged stable locks.
 - Artifact names are generated from lock fields; validate changes with
   `scripts/ci/check-build-names.sh`.
+- `DEFAULT_BUILD_METHOD='imagebuilder'` requires the full set of ImageBuilder
+  pins: `SDK_URL`, `SDK_SHA256`, `IMAGEBUILDER_URL`, `IMAGEBUILDER_SHA256`,
+  and `IMAGEBUILDER_REPOSITORIES` (`url|sha256` per apk index), plus
+  `IMAGEBUILDER_PATCHED_PACKAGES`. Pins are all-or-nothing and must name the
+  lock's release, target, and subtarget.
+- Refresh ImageBuilder pins only with `./scripts/pin-imagebuilder.sh
+  locks/<device>.lock` (dry run first with `--dry-run`); it verifies the
+  release metadata against the lock before rewriting. Do not hand-edit index
+  hashes, and never drop a repository entry to make a build pass.
+- Keep `locks/build-wr3000e-main.lock` on the source method; `main` has no
+  release SDK or ImageBuilder to pin.
 
 ## ASU-Like Upgrade Preparation
 

@@ -39,6 +39,7 @@ make_feed_repo() {
 
   mkdir -p "$repo"
   git -C "$repo" init -q
+  git -C "$repo" config uploadpack.allowFilter true
   printf '%s\n' "$name" >"$repo/README"
   git_commit_all "$repo" "seed $name"
   git -C "$repo" rev-parse HEAD
@@ -46,6 +47,7 @@ make_feed_repo() {
 
 mkdir -p "$source_repo/scripts" "$input_root"
 git -C "$source_repo" init -q
+git -C "$source_repo" config uploadpack.allowFilter true
 
 cat >"$source_repo/scripts/feeds" <<'FEEDS'
 #!/usr/bin/env bash
@@ -57,6 +59,9 @@ case "${1:-}" in
       [[ "$kind" == 'src-git-full' ]] || continue
       url="${pinned%%^*}"
       ref="${pinned#*^}"
+      # Like OpenWrt, keep an existing checkout of a pinned commit.
+      [[ ! -d "feeds/$name/.git" ]] || continue
+      printf 'feeds-clone %s\n' "$name" >>feeds-calls.log
       git clone -q "$url" "feeds/$name"
       git -C "feeds/$name" checkout -q --detach "$ref"
     done <feeds.conf
@@ -141,18 +146,18 @@ write_lock() {
   extra_sha="$(sha256sum "$input_root/extra.patch" | awk '{print $1}')"
   feed_sha="$(local_feed_digest "$input_root/feed")"
   cat >"$lock_file" <<LOCK
-OPENWRT_REPO_URL='$source_repo'
+OPENWRT_REPO_URL='file://$source_repo'
 OPENWRT_TAG='vtest'
 OPENWRT_REF='$openwrt_ref'
-FEED_PACKAGES_URL='$tmp_root/feed-packages'
+FEED_PACKAGES_URL='file://$tmp_root/feed-packages'
 FEED_PACKAGES_REF='$packages_ref'
-FEED_LUCI_URL='$tmp_root/feed-luci'
+FEED_LUCI_URL='file://$tmp_root/feed-luci'
 FEED_LUCI_REF='$luci_ref'
-FEED_ROUTING_URL='$tmp_root/feed-routing'
+FEED_ROUTING_URL='file://$tmp_root/feed-routing'
 FEED_ROUTING_REF='$routing_ref'
-FEED_TELEPHONY_URL='$tmp_root/feed-telephony'
+FEED_TELEPHONY_URL='file://$tmp_root/feed-telephony'
 FEED_TELEPHONY_REF='$telephony_ref'
-FEED_VIDEO_URL='$tmp_root/feed-video'
+FEED_VIDEO_URL='file://$tmp_root/feed-video'
 FEED_VIDEO_REF='$video_ref'
 LOCAL_FEEDS=('testfeed:$input_root/feed')
 LOCAL_FEED_SHA256S=('testfeed:$feed_sha')
@@ -209,6 +214,20 @@ grep -Fqx "workspace_id=$workspace_id" "$workspace/output/build-summary.txt" ||
   die 'workspace ID is missing from build metadata'
 grep -Fqx 'CONFIG_PACKAGE_htop=y' "$workspace/openwrt/.config" ||
   die 'captured world package absent from diffconfig was not selected'
+grep -Fqx 'build_method=source' "$workspace/output/build-summary.txt" ||
+  die 'lock without DEFAULT_BUILD_METHOD did not build from source'
+grep -Fqx 'initramfs_image=openwrt-test-fake-device-initramfs-kernel.bin' "$workspace/output/build-summary.txt" ||
+  die 'source build did not publish the initramfs image'
+grep -Fqx $'workspace_path\t'"$workspace" "$workspace/.openwrt-ft-state/compatibility.tsv" ||
+  die 'compatibility state does not record the workspace path'
+for repo in "$workspace/openwrt" "$workspace/openwrt/feeds/packages" "$workspace/openwrt/feeds/video"; do
+  [[ "$(git -C "$repo" config --get remote.origin.partialclonefilter)" == 'blob:none' ]] ||
+    die "pinned repository was not cloned without historical blobs: $repo"
+done
+[[ "$(git -C "$workspace/openwrt/feeds/luci" symbolic-ref --short HEAD)" == "$luci_ref" ]] ||
+  die 'pre-cloned feed does not use the OpenWrt pinned-commit branch name'
+[[ ! -e "$workspace/openwrt/feeds-calls.log" ]] ||
+  die 'scripts/feeds cloned a feed that was already pinned'
 
 : >"$workspace/openwrt/make-calls.log"
 mac80211_dest="$workspace/openwrt/package/kernel/mac80211/patches/subsys/mac80211.patch"
@@ -402,6 +421,7 @@ fi
 
 legacy_workspace="$work_root/legacy"
 mkdir -p "$legacy_workspace"
+printf 'old build output\n' >"$legacy_workspace/leftover"
 if WORK_ROOT="$work_root" CACHE_ROOT="$cache_root" USE_CCACHE=0 \
   BUILDER_PLATFORM=linux/amd64 \
   "$builder" \
@@ -413,6 +433,41 @@ if WORK_ROOT="$work_root" CACHE_ROOT="$cache_root" USE_CCACHE=0 \
 fi
 grep -Fq 'rerun with --fresh' "$tmp_root/legacy.log" ||
   die 'legacy workspace refusal did not require --fresh'
+
+# Schema 2 workspaces predate the build method and the fixed workspace path.
+schema_workspace="$work_root/schema-two"
+run_build schema-two-seed --workspace schema-two
+sed -i -e '/^build_method\t/d' -e '/^workspace_path\t/d' \
+  -e 's/^state_schema\t.*$/state_schema\t2/' \
+  "$schema_workspace/.openwrt-ft-state/compatibility.tsv"
+sed -i 's/^state_schema\t.*$/state_schema\t2/' "$schema_workspace/.openwrt-ft-state/last-success.tsv"
+if run_build schema-two --workspace schema-two >"$tmp_root/schema-two.log" 2>&1; then
+  die 'schema 2 workspace was accepted'
+fi
+grep -Fq 'build_method: stored=<missing> current=source' "$tmp_root/schema-two.log" ||
+  die 'schema 2 refusal did not report the missing build method'
+grep -Fq 'rerun with --fresh' "$tmp_root/schema-two.log" ||
+  die 'schema 2 refusal did not require --fresh'
+run_build schema-two-fresh --workspace schema-two --fresh
+grep -Fqx 'build_mode=full' "$schema_workspace/output/build-summary.txt" ||
+  die 'one --fresh did not replace a schema 2 workspace'
+
+# Wrappers create and mount an empty workspace before its first build.
+mount_workspace="$work_root/mounted"
+mkdir -p "$mount_workspace"
+WORKSPACE_PATH="$mount_workspace" run_build mounted-seed --workspace mounted
+grep -Fqx 'build_mode=full' "$mount_workspace/output/build-summary.txt" ||
+  die 'empty workspace mount point was not built as a full build'
+printf 'keep the mount point\n' >"$mount_workspace/.mount-marker"
+WORKSPACE_PATH="$mount_workspace" run_build mounted-fresh --workspace mounted --fresh
+[[ -d "$mount_workspace" && ! -e "$mount_workspace/.mount-marker" ]] ||
+  die 'fresh build did not clear the workspace contents in place'
+if WORKSPACE_PATH="$resume_workspace" run_build mounted-mismatch --workspace mounted \
+  >"$tmp_root/mounted-mismatch.log" 2>&1; then
+  die 'WORKSPACE_PATH naming another workspace was accepted'
+fi
+grep -Fq 'WORKSPACE_PATH must be the mounted workspace' "$tmp_root/mounted-mismatch.log" ||
+  die 'WORKSPACE_PATH mismatch was not identified'
 
 mkdir -p "$tmp_root/symlink-target"
 ln -s "$tmp_root/symlink-target" "$work_root/symlink-workspace"
