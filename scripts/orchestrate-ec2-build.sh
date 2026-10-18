@@ -43,6 +43,8 @@ Options:
   --download-jobs N         Export DOWNLOAD_JOBS into the container build.
   --strict-manifest         Fail if built package manifest drifts. Default behavior.
   --no-strict-manifest      Report package drift without failing the build.
+  --build-method METHOD     source or imagebuilder. Default: the lock's
+                            DEFAULT_BUILD_METHOD, or source.
   --include-untracked       Also upload untracked, non-ignored repo files.
   --fetch-artifacts DIR     Wait for completion and copy output files and logs
                             to DIR, which must not exist yet. Output is staged
@@ -97,6 +99,7 @@ UBUNTU_SNAPSHOT=''
 MAKE_JOBS=''
 DOWNLOAD_JOBS=''
 STRICT_MANIFEST='1'
+BUILD_METHOD=''
 INCLUDE_UNTRACKED='0'
 FETCH_ARTIFACTS_DIR=''
 INSTALL_PREREQS='auto'
@@ -156,6 +159,15 @@ while [[ $# -gt 0 ]]; do
     --strict-manifest)
       STRICT_MANIFEST='1'
       shift
+      ;;
+    --build-method)
+      [[ $# -ge 2 ]] || die "--build-method requires a value"
+      case "$2" in
+        source|imagebuilder) ;;
+        *) die "--build-method must be source or imagebuilder" ;;
+      esac
+      BUILD_METHOD="$2"
+      shift 2
       ;;
     --no-strict-manifest)
       STRICT_MANIFEST='0'
@@ -629,7 +641,8 @@ REMOTE_INFO="$(
     "$(remote_shell_quote "$STRICT_MANIFEST")" \
     "$(remote_shell_quote "$(remote_arg "$BUILDER_BASE_IMAGE")")" \
     "$(remote_shell_quote "$(remote_arg "$UBUNTU_SNAPSHOT")")" \
-    "$(remote_shell_quote "$BUILDER_PLATFORM")" <<'REMOTE'
+    "$(remote_shell_quote "$BUILDER_PLATFORM")" \
+    "$(remote_shell_quote "$(remote_arg "$BUILD_METHOD")")" <<'REMOTE'
 set -euo pipefail
 
 empty_arg='__openwrt_ft_empty_arg__'
@@ -654,6 +667,7 @@ strict_manifest="${10}"
 builder_base_image="$(decode_arg "${11}")"
 ubuntu_snapshot="$(decode_arg "${12}")"
 builder_platform="${13}"
+build_method="$(decode_arg "${14}")"
 
 case "$remote_root" in
   "~") remote_root="$HOME" ;;
@@ -684,6 +698,7 @@ strict_manifest_q="$(printf '%q' "$strict_manifest")"
 builder_base_image_q="$(printf '%q' "$builder_base_image")"
 ubuntu_snapshot_q="$(printf '%q' "$ubuntu_snapshot")"
 builder_platform_q="$(printf '%q' "$builder_platform")"
+build_method_q="$(printf '%q' "$build_method")"
 docker_mode_q="$(printf '%q' "$docker_mode")"
 
 cat >"$launcher" <<EOF
@@ -705,6 +720,7 @@ strict_manifest=$strict_manifest_q
 builder_base_image=$builder_base_image_q
 ubuntu_snapshot=$ubuntu_snapshot_q
 builder_platform=$builder_platform_q
+build_method=$build_method_q
 docker_mode=$docker_mode_q
 
 case "\$docker_mode" in
@@ -734,6 +750,9 @@ if [[ -n "\$download_jobs" ]]; then
   docker_env+=(-e DOWNLOAD_JOBS="\$download_jobs")
 fi
 docker_env+=(-e STRICT_MANIFEST="\$strict_manifest")
+if [[ -n "\$build_method" ]]; then
+  docker_env+=(-e BUILD_METHOD="\$build_method")
+fi
 
 docker_build_args=()
 docker_platform_args=()
@@ -774,13 +793,17 @@ set +e
   docker_env+=(
     -e BUILDER_ID="\$builder_id"
     -e WORKSPACE_ID="\$build_id"
+    -e WORKSPACE_PATH=/build
     -e FRESH=1
   )
+  # A fixed workspace path keeps compiler command lines identical.
+  mkdir -p "\$repo_dir/build/\$build_id"
   printf '[%s] starting container build for %s\n' "\$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "\$lock_file"
   "\${docker_cmd[@]}" run --rm \\
     "\${docker_platform_args[@]}" \\
     "\${docker_env[@]}" \\
     -v "\$repo_dir:/workspace" \\
+    -v "\$repo_dir/build/\$build_id:/build" \\
     -v "\$cache_dir:/cache" \\
     -w /workspace \\
     "\$image_tag" \\
