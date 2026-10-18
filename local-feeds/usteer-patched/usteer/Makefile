@@ -1,12 +1,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=usteer
-PKG_VERSION:=2026.05.04.25.12.5
+PKG_VERSION:=2026.10.18.25.12.5
 PKG_RELEASE:=1
 
-PKG_SOURCE:=usteer-2026.05.04.25.12.5-r1.apk
-PKG_SOURCE_URL:=https://github.com/AndreaCovelli/usteer-apk-builder/releases/download/usteer-2026.05.04.25.12.5-r1
-PKG_HASH:=22cb6ac8aa0a54c18a78202829b8caee92116dbf58ee37f12c03d422d6ac53f1
+PKG_SOURCE:=usteer-2026.10.18.25.12.5-r1.apk
+PKG_SOURCE_URL:=https://github.com/AndreaCovelli/usteer-apk-builder/releases/download/usteer-2026.10.18.25.12.5-r1
+PKG_HASH:=6e7b172a5a36ce52c280a18c6074808904b1697f972c1c9d42f633f99b49e555
 PKG_BUILD_DEPENDS:=apk/host
 
 include $(INCLUDE_DIR)/package.mk
