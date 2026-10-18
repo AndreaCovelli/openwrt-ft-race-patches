@@ -1,27 +1,30 @@
 # Temporary main-branch compile-check input for wr3000e.
+# OpenWrt and feed refs match the mediatek/filogic snapshot r37384-bcb16b6347.
+# The patch is the backports 7.2 form from openwrt-upstream commit
+# 316f6eef051156078f42c8d35cdbef3dd877f265.
 
 OPENWRT_REPO_URL='https://git.openwrt.org/openwrt/openwrt.git'
 OPENWRT_TAG=''
-OPENWRT_REF='8de418547f61d48315d115ed035b61464b3f1140'
+OPENWRT_REF='bcb16b6347251f09a99c875c92db14a20c9499a3'
 
 FEED_PACKAGES_URL='https://git.openwrt.org/feed/packages.git'
-FEED_PACKAGES_REF='7c83b19c73ef1301d20f3dc62fd9fe145ec7da3f'
+FEED_PACKAGES_REF='681b4179a3ca463c879153cad403a25707b9983e'
 
 FEED_LUCI_URL='https://git.openwrt.org/project/luci.git'
-FEED_LUCI_REF='9e2dfa1b4303adf92d8579dad87c2a62026c7025'
+FEED_LUCI_REF='b0cead459cfb434f2b2066e03f36c5bf39a583e7'
 
 FEED_ROUTING_URL='https://git.openwrt.org/feed/routing.git'
-FEED_ROUTING_REF='776e7160636a7f1add27483ac926dadeb248bb65'
+FEED_ROUTING_REF='4b9891b9136259f93294a424507ed24c5e8c1cbd'
 
 FEED_TELEPHONY_URL='https://git.openwrt.org/feed/telephony.git'
-FEED_TELEPHONY_REF='e2c5adab62e25eddeff3e52d4678163f6c9a6c3a'
+FEED_TELEPHONY_REF='5d68d53c160a325ea9d03fce393e051573bcc736'
 
 FEED_VIDEO_URL='https://github.com/openwrt/video.git'
-FEED_VIDEO_REF='d25cad605d8ce9ff536d85bdda2ad7eb2b83f883'
+FEED_VIDEO_REF='6917907d4d6c670cf85be525d23216595655061d'
 
-PATCH_SOURCE='patches/subsys/400-mac80211-defer-ap-side-ft-key-upload.patch'
-PATCH_DEST='package/kernel/mac80211/patches/subsys/400-mac80211-defer-ap-side-ft-key-upload.patch'
-PATCH_SHA256='88a2dd27e51e0e23da36373d46dbdfaa0ec057b426da0e411ff0794b646e7774'
+PATCH_SOURCE='patches/main/subsys/400-wifi-mac80211-defer-ap-side-ft-key-upload.patch'
+PATCH_DEST='package/kernel/mac80211/patches/subsys/400-wifi-mac80211-defer-ap-side-ft-key-upload.patch'
+PATCH_SHA256='dffeefba673269a9b9f52f3528ec9ca870615d3002947d66dccc91ead6cee52e'
 
 CONFIG_FRAGMENT='devices/wr3000e/diffconfig'
 WORLD_SOURCE='devices/wr3000e/apk-installed-and-world.txt'
