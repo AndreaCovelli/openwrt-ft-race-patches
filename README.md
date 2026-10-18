@@ -162,7 +162,9 @@ Device lock inputs in this repo:
 - `locks/build-wr3000.lock`
 - `locks/build-wr3000e.lock`
 - `locks/build-wr3000p.lock`
-- `locks/build-wr3000e-main.lock` for a main-branch compile check only
+- `locks/build-wr3000e-main.lock` for a main-branch compile check only. It
+  uses `patches/main/subsys/400-wifi-mac80211-defer-ap-side-ft-key-upload.patch`,
+  the patch refreshed for the backports version on OpenWrt `main`.
 
 Example device metadata in this repo:
 - `devices/wr3000/diffconfig`
