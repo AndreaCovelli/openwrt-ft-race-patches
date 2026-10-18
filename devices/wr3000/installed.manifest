@@ -79,8 +79,6 @@ kmod-slhc - 6.12.94-r1
 kmod-thermal - 6.12.94-r1
 libblobmsg-json20260213 - 2026.06.19~7dd12784-r1
 libc - 1.2.5-r5
-libcap - 2.69-r1
-libevent2-7 - 2.1.12-r2
 libgcc1 - 14.3.0-r5
 libiwinfo-data - 2026.01.14~f5dd57a8-r1
 libiwinfo20230701 - 2026.01.14~f5dd57a8-r1
@@ -101,7 +99,6 @@ libuclient20201210 - 2026.06.07~daad21fa-r1
 libucode20230711 - 2026.01.16~85922056-r1
 libudebug - 2026.01.16~875e1a7a
 libustream-mbedtls20201210 - 2026.03.01~99f1c0db-r1
-lldpd - 1.0.20-r1
 logd - 2025.10.30~6f78fa49-r1
 luci - 26.051.07599~e08a56d
 luci-app-attendedsysupgrade - 26.087.74782~b3f192d

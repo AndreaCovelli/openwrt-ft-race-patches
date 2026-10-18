@@ -79,8 +79,6 @@ kmod-slhc-6.12.94-r1 aarch64_cortex-a53 {feeds/base/kernel/linux} (GPL-2.0-only)
 kmod-thermal-6.12.94-r1 aarch64_cortex-a53 {feeds/base/kernel/linux} (GPL-2.0-only) [installed]
 libblobmsg-json20260213-2026.06.19~7dd12784-r1 aarch64_cortex-a53 {feeds/base/libs/libubox} (ISC) [installed]
 libc-1.2.5-r5 aarch64_cortex-a53 {feeds/base/libs/toolchain} (GPL-3.0-with-GCC-exception) [installed]
-libcap-2.69-r1 aarch64_cortex-a53 {feeds/base/libs/libcap} (GPL-2.0-only) [installed]
-libevent2-7-2.1.12-r2 aarch64_cortex-a53 {feeds/base/libs/libevent2} (BSD-3-Clause) [installed]
 libgcc1-14.3.0-r5 aarch64_cortex-a53 {feeds/base/libs/toolchain} (GPL-3.0-with-GCC-exception) [installed]
 libiwinfo-data-2026.01.14~f5dd57a8-r1 aarch64_cortex-a53 {feeds/base/network/utils/iwinfo} (GPL-2.0) [installed]
 libiwinfo20230701-2026.01.14~f5dd57a8-r1 aarch64_cortex-a53 {feeds/base/network/utils/iwinfo} (GPL-2.0) [installed]
@@ -101,7 +99,6 @@ libuclient20201210-2026.06.07~daad21fa-r1 aarch64_cortex-a53 {feeds/base/libs/uc
 libucode20230711-2026.01.16~85922056-r1 aarch64_cortex-a53 {feeds/base/utils/ucode} (ISC) [installed]
 libudebug-2026.01.16~875e1a7a aarch64_cortex-a53 {feeds/base/libs/udebug} (GPL-2.0) [installed]
 libustream-mbedtls20201210-2026.03.01~99f1c0db-r1 aarch64_cortex-a53 {feeds/base/libs/ustream-ssl} (ISC) [installed]
-lldpd-1.0.20-r1 aarch64_cortex-a53 {feeds/base/network/services/lldpd} (ISC) [installed]
 logd-2025.10.30~6f78fa49-r1 aarch64_cortex-a53 {feeds/base/system/ubox} (GPL-2.0) [installed]
 luci-26.051.07599~e08a56d noarch {feeds/luci/feeds/luci/collections/luci} (Apache-2.0) [installed]
 luci-app-attendedsysupgrade-26.087.74782~b3f192d noarch {feeds/luci/feeds/luci/applications/luci-app-attendedsysupgrade} (GPL-2.0) [installed]
@@ -277,7 +274,6 @@ libuclient20201210
 libucode20230711
 libudebug
 libustream-mbedtls20201210
-lldpd
 logd
 luci
 luci-app-attendedsysupgrade
