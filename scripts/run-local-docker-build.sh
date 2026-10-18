@@ -24,12 +24,17 @@ Options:
   --session NAME            Build/session name. Default:
                             openwrt-ft-<device-id>-<openwrt-version>-<variant>-<utc>.
   --workspace NAME          Reusable build workspace. Default:
-                            build/openwrt-ft-<device-id>-dev.
+                            build/openwrt-ft-<device-id>-dev for source
+                            builds and build/openwrt-ft-<device-id>-ib for
+                            ImageBuilder builds. It is mounted at /build.
+  --build-method METHOD     source or imagebuilder. Default: the lock's
+                            DEFAULT_BUILD_METHOD, or source.
   --artifact-dir DIR        New local artifact directory (must not exist). Default:
                             ./openwrt-artifacts/<session>.
-  --fresh                   Replace the exact workspace and run a full build.
+  --fresh                   Clear the exact workspace and run a full build.
   --rebuild-package NAME    Force an incremental package rebuild. Repeatable;
                             NAME is mac80211, local-feeds, or all.
+                            ImageBuilder builds accept mac80211 or all.
   --builder-image REF       Prebuilt Docker builder image. Default:
                             DEFAULT_BUILDER_IMAGE in
                             scripts/lib/builder-image.sh.
@@ -97,6 +102,7 @@ abs_repo_path() {
 
 SESSION_NAME=''
 WORKSPACE_NAME=''
+BUILD_METHOD=''
 ARTIFACT_DIR=''
 BUILDER_IMAGE="$DEFAULT_BUILDER_IMAGE"
 REBUILD_BUILDER_IMAGE='0'
@@ -126,6 +132,15 @@ while [[ $# -gt 0 ]]; do
     --workspace)
       [[ $# -ge 2 ]] || die "--workspace requires a value"
       WORKSPACE_NAME="$2"
+      shift 2
+      ;;
+    --build-method)
+      [[ $# -ge 2 ]] || die "--build-method requires a value"
+      case "$2" in
+        source|imagebuilder) ;;
+        *) die "--build-method must be source or imagebuilder" ;;
+      esac
+      BUILD_METHOD="$2"
       shift 2
       ;;
     --artifact-dir)
@@ -255,8 +270,17 @@ LOCK_FILE_REL="${LOCK_FILE#"$REPO_ROOT"/}"
 if [[ -z "$SESSION_NAME" ]]; then
   SESSION_NAME="$(openwrt_default_build_name_from_lock "$LOCK_FILE")"
 fi
+if [[ -z "$BUILD_METHOD" ]]; then
+  BUILD_METHOD="$(openwrt_default_build_method_from_lock "$LOCK_FILE")"
+fi
 if [[ -z "$WORKSPACE_NAME" ]]; then
-  WORKSPACE_NAME="$(openwrt_default_workspace_name_from_lock "$LOCK_FILE")"
+  WORKSPACE_NAME="$(openwrt_default_workspace_name_from_lock "$LOCK_FILE" "$BUILD_METHOD")"
+fi
+if [[ "$BUILD_METHOD" == 'imagebuilder' ]]; then
+  for rebuild_package in "${REBUILD_PACKAGES[@]}"; do
+    [[ "$rebuild_package" != 'local-feeds' ]] ||
+      die '--rebuild-package local-feeds needs --build-method source'
+  done
 fi
 case "$SESSION_NAME" in
   *[!A-Za-z0-9._-]*)
@@ -414,6 +438,8 @@ docker_env=(
   -e CACHE_ROOT=/cache
   -e BUILD_ID="$SESSION_NAME"
   -e WORKSPACE_ID="$WORKSPACE_NAME"
+  -e WORKSPACE_PATH=/build
+  -e BUILD_METHOD="$BUILD_METHOD"
   -e BUILDER_ID="$BUILDER_ID"
   -e BUILDER_PLATFORM="$BUILDER_PLATFORM"
   -e STRICT_MANIFEST="$STRICT_MANIFEST"
@@ -435,9 +461,9 @@ if [[ "$USE_CCACHE" == '1' ]]; then
   docker_env+=(-e CCACHE_DIR=/cache/ccache -e CCACHE_MAXSIZE="$CCACHE_MAXSIZE")
 fi
 
-log "Starting local container build for $LOCK_FILE_REL"
+log "Starting local $BUILD_METHOD container build for $LOCK_FILE_REL"
 log "Workspace: build/$WORKSPACE_NAME"
-mkdir -p "$HOST_CACHE_DIR"
+mkdir -p "$HOST_CACHE_DIR" "$WORKSPACE_DIR"
 if [[ "$USE_CCACHE" == '1' ]]; then
   mkdir -p "$HOST_CACHE_DIR/ccache"
 fi
@@ -454,6 +480,7 @@ fi
   "${docker_user_args[@]}" \
   "${docker_env[@]}" \
   -v "$REPO_ROOT:/workspace" \
+  -v "$WORKSPACE_DIR:/build" \
   -v "$HOST_CACHE_DIR:/cache" \
   -w /workspace \
   "$IMAGE_TAG" \

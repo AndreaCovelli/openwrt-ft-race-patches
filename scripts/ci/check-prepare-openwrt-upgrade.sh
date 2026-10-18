@@ -171,8 +171,20 @@ fi
 EOF
 chmod +x "$tmp_root/bin/git"
 
+cat >"$tmp_root/pin-imagebuilder" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+# shellcheck source=/dev/null
+source "$1"
+printf '%s %s\n' "$OPENWRT_TAG" "$1" >>"$TEST_PIN_LOG"
+[[ "${TEST_PIN_FAIL:-0}" != '1' ]]
+EOF
+chmod +x "$tmp_root/pin-imagebuilder"
+
 export PATH="$tmp_root/bin:$PATH"
 export PREPARE_OPENWRT_UPGRADE_PATH_PREFIX="$tmp_root/bin"
+export PIN_IMAGEBUILDER_SCRIPT="$tmp_root/pin-imagebuilder"
+export TEST_PIN_LOG="$tmp_root/pin-imagebuilder.log"
 
 out_bad_cli_server="$tmp_root/prepare-upgrade-bad-cli-server.out"
 out_up_to_date="$tmp_root/prepare-upgrade-up-to-date.out"
@@ -199,6 +211,8 @@ assert_contains "$dry_run_output" 'Build command:'
 assert_contains "$dry_run_output" '--no-strict-manifest'
 assert_contains "$dry_run_output" '--make-jobs'
 assert_contains "$dry_run_output" 'Dry run only; build not started.'
+assert_contains "$dry_run_output" "Would refresh ImageBuilder pins with $tmp_root/pin-imagebuilder"
+[[ ! -e "$TEST_PIN_LOG" ]] || die 'dry run refreshed ImageBuilder pins'
 assert_file_not_contains "$tmp_root/dry-run-ssh.log" 'cat /lib/apk/db/installed'
 assert_file_not_contains "$tmp_root/dry-run-ssh.log" 'apk list --installed'
 assert_file_not_contains "$tmp_root/dry-run-ssh.log" 'cat /etc/apk/world'
@@ -248,6 +262,21 @@ assert_file_contains "$repo_tmp/devices/wr3000e/apk-installed-and-world.txt" '__
 assert_file_contains "$repo_tmp/devices/wr3000e/apk-installed-and-world.txt" 'kernel'
 assert_file_not_contains "$repo_tmp/devices/wr3000e/apk-installed-and-world.txt" 'kernel='
 assert_file_contains "$out_up_to_date" 'Router is already on 25.12.4; build not started.'
+assert_file_contains "$TEST_PIN_LOG" "v25.12.4 $repo_root/.tmp-prepare-openwrt-upgrade-test/build-wr3000e.lock"
+
+cp "$repo_tmp/build-wr3000e.lock" "$repo_tmp/build-wr3000e.lock.pinned"
+sed -i \
+  -e "s|^OPENWRT_TAG='v25.12.4'|OPENWRT_TAG='v25.12.2'|" \
+  -e "s|^OPENWRT_REF='ba915c2ee711d047d5be8575c1e98699119429ab'|OPENWRT_REF='0000000000000000000000000000000000000000'|" \
+  "$repo_tmp/build-wr3000e.lock"
+out_pin_fail="$tmp_root/prepare-upgrade-pin-fail.out"
+if TEST_PIN_FAIL='1' TEST_ROUTER_RELEASE='25.12.4' scripts/prepare-openwrt-upgrade.sh \
+  --version 25.12.4 router .tmp-prepare-openwrt-upgrade-test/build-wr3000e.lock >"$out_pin_fail" 2>&1; then
+  die 'failed ImageBuilder pin refresh unexpectedly succeeded'
+fi
+assert_file_contains "$out_pin_fail" 'has new release pins but stale ImageBuilder pins'
+assert_file_not_contains "$out_pin_fail" 'build not started'
+mv "$repo_tmp/build-wr3000e.lock.pinned" "$repo_tmp/build-wr3000e.lock"
 
 cat >"$tmp_root/build-wrapper" <<'EOF'
 #!/usr/bin/env bash

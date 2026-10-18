@@ -233,6 +233,83 @@ validate_local_feeds() {
   fi
 }
 
+# SDK and ImageBuilder pins are all-or-nothing and must name the official
+# archives of the lock's release, target, and subtarget.
+validate_imagebuilder_pins() {
+  local lock="$1"
+  local name count=0 version release_path parsed_method entry url sha256 package install found
+  local prebuilt_name file
+  local -A seen_urls=()
+  local -a pin_vars=(SDK_URL SDK_SHA256 IMAGEBUILDER_URL IMAGEBUILDER_SHA256)
+  local -a pin_arrays=(IMAGEBUILDER_REPOSITORIES IMAGEBUILDER_PATCHED_PACKAGES)
+
+  parsed_method="$(openwrt_default_build_method_from_lock "$lock")" ||
+    die "$lock: cannot parse DEFAULT_BUILD_METHOD"
+  [[ "${DEFAULT_BUILD_METHOD:-source}" == "$parsed_method" ]] ||
+    die "$lock: sourced and parsed DEFAULT_BUILD_METHOD differ"
+
+  for name in "${pin_vars[@]}"; do
+    [[ -z "${!name:-}" ]] || count=$((count + 1))
+  done
+  for name in "${pin_arrays[@]}"; do
+    ! declare -p "$name" >/dev/null 2>&1 || count=$((count + 1))
+  done
+  if ((count == 0)); then
+    [[ "$parsed_method" == 'source' ]] ||
+      die "$lock: DEFAULT_BUILD_METHOD=imagebuilder requires SDK and ImageBuilder pins"
+    return 0
+  fi
+  ((count == ${#pin_vars[@]} + ${#pin_arrays[@]})) ||
+    die "$lock: set all of ${pin_vars[*]} ${pin_arrays[*]} or none of them"
+
+  [[ "${OPENWRT_TAG:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$ ]] ||
+    die "$lock: ImageBuilder pins require a release OPENWRT_TAG"
+  version="${OPENWRT_TAG#v}"
+  release_path="/releases/$version/targets/$TARGET/$SUBTARGET"
+
+  [[ "$SDK_URL" == https://*"$release_path/openwrt-sdk-$version-$TARGET-${SUBTARGET}_"*.Linux-x86_64.tar.zst ]] ||
+    die "$lock: SDK_URL must be the https $version $TARGET/$SUBTARGET SDK archive: $SDK_URL"
+  [[ "$IMAGEBUILDER_URL" == https://*"$release_path/openwrt-imagebuilder-$version-$TARGET-$SUBTARGET.Linux-x86_64.tar.zst" ]] ||
+    die "$lock: IMAGEBUILDER_URL must be the https $version $TARGET/$SUBTARGET ImageBuilder archive: $IMAGEBUILDER_URL"
+  [[ "$SDK_SHA256" =~ ^[0-9a-f]{64}$ ]] ||
+    die "$lock: SDK_SHA256 must be a 64-character lowercase hex checksum"
+  [[ "$IMAGEBUILDER_SHA256" =~ ^[0-9a-f]{64}$ ]] ||
+    die "$lock: IMAGEBUILDER_SHA256 must be a 64-character lowercase hex checksum"
+
+  ((${#IMAGEBUILDER_REPOSITORIES[@]} > 0)) || die "$lock: IMAGEBUILDER_REPOSITORIES must not be empty"
+  for entry in "${IMAGEBUILDER_REPOSITORIES[@]}"; do
+    imagebuilder_parse_repository "$entry" url sha256 ||
+      die "$lock: invalid IMAGEBUILDER_REPOSITORIES entry"
+    [[ "$url" == *"/releases/$version/"* ]] ||
+      die "$lock: IMAGEBUILDER_REPOSITORIES URL is not for release $version: $url"
+    [[ -z "${seen_urls[$url]:-}" ]] ||
+      die "$lock: duplicate IMAGEBUILDER_REPOSITORIES URL: $url"
+    seen_urls[$url]=1
+  done
+
+  ((${#IMAGEBUILDER_PATCHED_PACKAGES[@]} > 0)) || die "$lock: IMAGEBUILDER_PATCHED_PACKAGES must not be empty"
+  for package in "${IMAGEBUILDER_PATCHED_PACKAGES[@]}"; do
+    [[ "$package" =~ ^[a-z0-9][a-z0-9+._-]*$ ]] ||
+      die "$lock: IMAGEBUILDER_PATCHED_PACKAGES entry has unsupported characters: $package"
+  done
+
+  # ImageBuilder builds inject prebuilt APKs instead of building local feeds.
+  if declare -p LOCAL_FEED_INSTALLS >/dev/null 2>&1; then
+    for install in "${LOCAL_FEED_INSTALLS[@]}"; do
+      package="${install#*:}"
+      found=0
+      if declare -p PREBUILT_APKS >/dev/null 2>&1; then
+        for entry in "${PREBUILT_APKS[@]}"; do
+          parse_prebuilt_apk "$lock" "$entry" prebuilt_name file url sha256
+          [[ "$prebuilt_name" != "$package" ]] || found=1
+        done
+      fi
+      ((found == 1)) ||
+        die "$lock: ImageBuilder pins need a PREBUILT_APKS entry for local feed package $package"
+    done
+  fi
+}
+
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
@@ -240,6 +317,8 @@ cd "$repo_root"
 source "$repo_root/scripts/lib/build-name.sh"
 # shellcheck source=scripts/lib/local-feeds.sh
 source "$repo_root/scripts/lib/local-feeds.sh"
+# shellcheck source=scripts/lib/imagebuilder.sh
+source "$repo_root/scripts/lib/imagebuilder.sh"
 
 mapfile -t locks < <(git ls-files 'locks/*.lock' | sort)
 ((${#locks[@]} > 0)) || die 'no lock files found'
@@ -278,6 +357,8 @@ for lock in "${locks[@]}"; do
     unset OPENWRT_TAG LOCAL_FEEDS LOCAL_FEED_INSTALLS LOCAL_FEED_SHA256S PREBUILT_APKS
     unset EXTRA_CONFIG_LINES
     unset EXTRA_PATCH_SOURCES EXTRA_PATCH_DESTS EXTRA_PATCH_SHA256S
+    unset DEFAULT_BUILD_METHOD SDK_URL SDK_SHA256 IMAGEBUILDER_URL IMAGEBUILDER_SHA256
+    unset IMAGEBUILDER_REPOSITORIES IMAGEBUILDER_PATCHED_PACKAGES
 
     # shellcheck source=/dev/null
     source "$lock"
@@ -330,5 +411,6 @@ for lock in "${locks[@]}"; do
     validate_local_feeds "$lock"
     validate_prebuilt_apks "$lock"
     validate_prebuilt_apk_sources "$lock"
+    validate_imagebuilder_pins "$lock"
   )
 done

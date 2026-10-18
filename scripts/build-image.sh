@@ -9,6 +9,8 @@ REPO_ROOT="$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)"
 
 # shellcheck source=scripts/lib/build-name.sh
 source "$SCRIPT_DIR/lib/build-name.sh"
+# shellcheck source=scripts/lib/imagebuilder.sh
+source "$SCRIPT_DIR/lib/imagebuilder.sh"
 # shellcheck source=scripts/lib/local-feeds.sh
 source "$SCRIPT_DIR/lib/local-feeds.sh"
 # shellcheck source=scripts/lib/prebuilt-apks.sh
@@ -24,21 +26,31 @@ Usage:
 Options:
   --session NAME            Current run and artifact identity.
   --workspace NAME          Reusable workspace identity. Default:
-                            openwrt-ft-<device-id>-dev.
+                            openwrt-ft-<device-id>-dev for source builds and
+                            openwrt-ft-<device-id>-ib for ImageBuilder builds.
   --builder-id ID           Builder image identity. Required.
-  --fresh                   Replace the exact workspace and run a full build.
+  --build-method METHOD     source builds OpenWrt from source; imagebuilder
+                            compiles the patched packages with the pinned
+                            official SDK and assembles the image with the
+                            pinned official ImageBuilder. Default: the lock's
+                            DEFAULT_BUILD_METHOD, or source.
+  --fresh                   Clear the exact workspace and run a full build.
   --rebuild-package NAME    Force an incremental package rebuild. Repeatable;
                             NAME is mac80211, local-feeds, or all.
+                            ImageBuilder builds accept mac80211 or all.
   --help                    Show this message.
 
-Environment equivalents are BUILD_ID, WORKSPACE_ID, BUILDER_ID, FRESH, and
-REBUILD_PACKAGES (a comma- or space-separated selector list).
+Environment equivalents are BUILD_ID, WORKSPACE_ID, BUILDER_ID, BUILD_METHOD,
+FRESH, and REBUILD_PACKAGES (a comma- or space-separated selector list).
+WORKSPACE_PATH optionally names a fixed mount point of the same workspace, so
+compiler caches see identical paths across workspaces.
 EOF
 }
 
 BUILD_ID_ARG=''
 WORKSPACE_ID_ARG=''
 BUILDER_ID_ARG=''
+BUILD_METHOD_ARG=''
 FRESH_ARG=''
 REBUILD_PACKAGE_ARGS=()
 POSITIONAL=()
@@ -66,6 +78,14 @@ while [[ $# -gt 0 ]]; do
         exit 1
       }
       BUILDER_ID_ARG="$2"
+      shift 2
+      ;;
+    --build-method)
+      [[ $# -ge 2 ]] || {
+        printf 'error: --build-method requires a value\n' >&2
+        exit 1
+      }
+      BUILD_METHOD_ARG="$2"
       shift 2
       ;;
     --fresh)
@@ -129,6 +149,8 @@ fi
 
 unset OPENWRT_TAG OPENWRT_REF DEVICE_ID ARTIFACT_VARIANT
 unset EXTRA_PATCH_SOURCES EXTRA_PATCH_DESTS EXTRA_PATCH_SHA256S
+unset DEFAULT_BUILD_METHOD SDK_URL SDK_SHA256 IMAGEBUILDER_URL IMAGEBUILDER_SHA256
+unset IMAGEBUILDER_REPOSITORIES IMAGEBUILDER_PATCHED_PACKAGES
 
 # shellcheck source=/dev/null
 source "$LOCK_FILE"
@@ -224,7 +246,7 @@ verify_pinned_patch_hashes() {
 }
 
 apply_pinned_patches() {
-  local i source_abs dest sha256
+  local i source_abs dest sha256 target
 
   for i in "${!PINNED_PATCH_SOURCE_ABS[@]}"; do
     source_abs="${PINNED_PATCH_SOURCE_ABS[$i]}"
@@ -233,8 +255,9 @@ apply_pinned_patches() {
     log "Applying pinned patch: $dest"
     verify_sha256 "$source_abs" "$sha256"
     # OpenWrt includes patch mtimes in its package preparation stamps.
-    if ! cmp -s "$source_abs" "$OPENWRT_DIR/$dest"; then
-      install -D -m 0644 "$source_abs" "$OPENWRT_DIR/$dest"
+    target="$(patch_destination_path "$dest")"
+    if ! cmp -s "$source_abs" "$target"; then
+      install -D -m 0644 "$source_abs" "$target"
     fi
   done
 }
@@ -435,10 +458,15 @@ configure_ccache_environment() {
 
   # A fresh tree rebuilds the cross-compiler, so ccache's default mtime check
   # misses every target object. The pinned OpenWrt tree, builder image, and
-  # toolchain configuration determine the compilers instead.
+  # toolchain configuration determine the compilers instead. The SDK ships a
+  # prebuilt toolchain identified by the SDK archive checksum.
   local toolchain_digest
-  toolchain_digest="$(toolchain_config_digest)"
-  export CCACHE_COMPILERCHECK="string:openwrt=$OPENWRT_REF;builder=$BUILDER_ID;toolchain=$toolchain_digest"
+  if [[ "$BUILD_METHOD" == 'imagebuilder' ]]; then
+    export CCACHE_COMPILERCHECK="string:sdk=$SDK_SHA256;builder=$BUILDER_ID"
+  else
+    toolchain_digest="$(toolchain_config_digest)"
+    export CCACHE_COMPILERCHECK="string:openwrt=$OPENWRT_REF;builder=$BUILDER_ID;toolchain=$toolchain_digest"
+  fi
   # Debug-info objects otherwise hash the workspace path.
   export CCACHE_NOHASHDIR=1
   log "ccache compiler check: $CCACHE_COMPILERCHECK"
@@ -512,15 +540,64 @@ state_entry() {
   printf '%s\t%s\n' "$key" "$value"
 }
 
+# The SDK and ImageBuilder use the official release config, so only source
+# builds consume the device config inputs and local feeds.
+write_source_compatibility_entries() {
+  local i index entry name path
+
+  state_entry config_fragment.path "$CONFIG_FRAGMENT"
+  state_entry config_fragment.sha256 "$(sha256sum "$CONFIG_FRAGMENT_ABS" | awk '{print $1}')"
+
+  if declare -p EXTRA_CONFIG_LINES >/dev/null 2>&1; then
+    local -n extra_config_lines=EXTRA_CONFIG_LINES
+    for i in "${!extra_config_lines[@]}"; do
+      printf -v index '%03d' "$i"
+      state_entry "extra_config.$index" "${extra_config_lines[$i]}"
+    done
+  fi
+
+  if declare -p LOCAL_FEEDS >/dev/null 2>&1; then
+    local -n local_feeds=LOCAL_FEEDS
+    for i in "${!local_feeds[@]}"; do
+      entry="${local_feeds[$i]}"
+      name="${entry%%:*}"
+      path="${entry#*:}"
+      printf -v index '%03d' "$i"
+      state_entry "local_feed.$index.name" "$name"
+      state_entry "local_feed.$index.path" "$path"
+    done
+  fi
+
+  if declare -p LOCAL_FEED_INSTALLS >/dev/null 2>&1; then
+    local -n local_feed_installs=LOCAL_FEED_INSTALLS
+    for i in "${!local_feed_installs[@]}"; do
+      printf -v index '%03d' "$i"
+      state_entry "local_feed_install.$index" "${local_feed_installs[$i]}"
+    done
+  fi
+}
+
+write_imagebuilder_compatibility_entries() {
+  local i index
+
+  state_entry imagebuilder.sha256 "$IMAGEBUILDER_SHA256"
+  state_entry imagebuilder.url "$IMAGEBUILDER_URL"
+  state_entry sdk.sha256 "$SDK_SHA256"
+  state_entry sdk.url "$SDK_URL"
+  for i in "${!IMAGEBUILDER_PATCHED_PACKAGES[@]}"; do
+    printf -v index '%03d' "$i"
+    state_entry "imagebuilder.patched_package.$index" "${IMAGEBUILDER_PATCHED_PACKAGES[$i]}"
+  done
+}
+
 write_compatibility_manifest() {
-  local i index entry name path file url sha256
+  local i index name file url sha256
 
   {
+    state_entry build_method "$BUILD_METHOD"
     state_entry builder_id "$BUILDER_ID"
     state_entry builder_platform "${BUILDER_PLATFORM:-unknown}"
     state_entry ccache "$USE_CCACHE_MODE"
-    state_entry config_fragment.path "$CONFIG_FRAGMENT"
-    state_entry config_fragment.sha256 "$(sha256sum "$CONFIG_FRAGMENT_ABS" | awk '{print $1}')"
     state_entry device_id "$DEVICE_ID"
     state_entry feed.luci.ref "$FEED_LUCI_REF"
     state_entry feed.luci.url "$FEED_LUCI_URL"
@@ -538,6 +615,7 @@ write_compatibility_manifest() {
     state_entry state_schema "$WORKSPACE_STATE_SCHEMA"
     state_entry subtarget "$SUBTARGET"
     state_entry target "$TARGET"
+    state_entry workspace_path "$BUILD_ROOT"
     state_entry world_source.path "$WORLD_SOURCE"
     state_entry world_source.sha256 "$(sha256sum "$WORLD_SOURCE_ABS" | awk '{print $1}')"
 
@@ -546,34 +624,6 @@ write_compatibility_manifest() {
       state_entry "patch.$index.source" "${PINNED_PATCH_SOURCES[$i]}"
       state_entry "patch.$index.destination" "${PINNED_PATCH_DESTS[$i]}"
     done
-
-    if declare -p EXTRA_CONFIG_LINES >/dev/null 2>&1; then
-      local -n extra_config_lines=EXTRA_CONFIG_LINES
-      for i in "${!extra_config_lines[@]}"; do
-        printf -v index '%03d' "$i"
-        state_entry "extra_config.$index" "${extra_config_lines[$i]}"
-      done
-    fi
-
-    if declare -p LOCAL_FEEDS >/dev/null 2>&1; then
-      local -n local_feeds=LOCAL_FEEDS
-      for i in "${!local_feeds[@]}"; do
-        entry="${local_feeds[$i]}"
-        name="${entry%%:*}"
-        path="${entry#*:}"
-        printf -v index '%03d' "$i"
-        state_entry "local_feed.$index.name" "$name"
-        state_entry "local_feed.$index.path" "$path"
-      done
-    fi
-
-    if declare -p LOCAL_FEED_INSTALLS >/dev/null 2>&1; then
-      local -n local_feed_installs=LOCAL_FEED_INSTALLS
-      for i in "${!local_feed_installs[@]}"; do
-        printf -v index '%03d' "$i"
-        state_entry "local_feed_install.$index" "${local_feed_installs[$i]}"
-      done
-    fi
 
     if declare -p PREBUILT_APKS >/dev/null 2>&1; then
       local -n prebuilt_apks=PREBUILT_APKS
@@ -584,6 +634,12 @@ write_compatibility_manifest() {
         state_entry "prebuilt_apk.$index.name" "$name"
       done
     fi
+
+    if [[ "$BUILD_METHOD" == 'imagebuilder' ]]; then
+      write_imagebuilder_compatibility_entries
+    else
+      write_source_compatibility_entries
+    fi
   } | sort
 }
 
@@ -592,7 +648,7 @@ write_compatibility_manifest() {
 write_build_state() {
   local i index entry name expected
 
-  state_entry final_config_sha256 "$(sha256sum "$OPENWRT_DIR/.config" | awk '{print $1}')"
+  state_entry final_config_sha256 "$(sha256sum "$BUILD_CONFIG_FILE" | awk '{print $1}')"
   for i in "${!PINNED_PATCH_SHA256S[@]}"; do
     printf -v index '%03d' "$i"
     state_entry "patch.$index.sha256" "${PINNED_PATCH_SHA256S[$i]}"
@@ -615,6 +671,13 @@ write_build_state() {
     for i in "${!state_prebuilt_apks[@]}"; do
       printf -v index '%03d' "$i"
       state_entry "prebuilt_apk.$index" "${state_prebuilt_apks[$i]}"
+    done
+  fi
+
+  if [[ "$BUILD_METHOD" == 'imagebuilder' ]]; then
+    for i in "${!IMAGEBUILDER_REPOSITORIES[@]}"; do
+      printf -v index '%03d' "$i"
+      state_entry "imagebuilder.repository.$index" "${IMAGEBUILDER_REPOSITORIES[$i]}"
     done
   fi
   state_entry state_schema "$WORKSPACE_STATE_SCHEMA"
@@ -675,6 +738,468 @@ patch_package_for_destination() {
   esac
 }
 
+# Absolute path that receives a pinned patch. The SDK installs OpenWrt's
+# package/ tree as its base feed.
+patch_destination_path() {
+  local dest="$1"
+
+  if [[ "$BUILD_METHOD" == 'imagebuilder' ]]; then
+    printf '%s/feeds/base/%s\n' "$SDK_DIR" "${dest#package/}"
+  else
+    printf '%s/%s\n' "$OPENWRT_DIR" "$dest"
+  fi
+}
+
+sha256_of() {
+  sha256sum "$1" | awk '{print $1}'
+}
+
+# Download URL to DEST unless DEST already has the expected checksum. A
+# mismatch fails closed; HINT explains how to refresh the pin.
+fetch_verified_file() {
+  local url="$1"
+  local dest="$2"
+  local expected="$3"
+  local hint="${4:-}"
+  local tmp actual
+
+  if [[ -f "$dest" ]] && [[ "$(sha256_of "$dest")" == "$expected" ]]; then
+    return 0
+  fi
+
+  mkdir -p "$(dirname -- "$dest")"
+  tmp="$(mktemp "$dest.tmp.XXXXXXXX")"
+  if ! curl -fsSL \
+    --proto '=https' \
+    --proto-redir '=https' \
+    --connect-timeout 10 \
+    --max-time 1800 \
+    --retry 3 \
+    --retry-connrefused \
+    -o "$tmp" \
+    "$url"; then
+    rm -f -- "$tmp"
+    die "failed to download $url"
+  fi
+
+  actual="$(sha256_of "$tmp")"
+  if [[ "$actual" != "$expected" ]]; then
+    rm -f -- "$tmp"
+    die "sha256 mismatch for $url: expected $expected got $actual${hint:+; $hint}"
+  fi
+  mv -f -- "$tmp" "$dest"
+}
+
+imagebuilder_validate_lock() {
+  local name value entry url sha256 dest install package prebuilt_entry
+  local prebuilt_name file found
+
+  [[ -n "${OPENWRT_TAG:-}" ]] || die 'ImageBuilder builds require OPENWRT_TAG'
+  for name in SDK_URL IMAGEBUILDER_URL; do
+    value="${!name:-}"
+    [[ "$value" =~ ^https://[A-Za-z0-9.-]+/[A-Za-z0-9._~/+-]+\.tar\.zst$ ]] ||
+      die "$name must be an https .tar.zst URL for ImageBuilder builds"
+  done
+  for name in SDK_SHA256 IMAGEBUILDER_SHA256; do
+    value="${!name:-}"
+    [[ "$value" =~ ^[0-9a-f]{64}$ ]] ||
+      die "$name must be a 64-character lowercase hex checksum for ImageBuilder builds"
+  done
+
+  declare -p IMAGEBUILDER_REPOSITORIES >/dev/null 2>&1 ||
+    die 'ImageBuilder builds require IMAGEBUILDER_REPOSITORIES'
+  ((${#IMAGEBUILDER_REPOSITORIES[@]} > 0)) || die 'IMAGEBUILDER_REPOSITORIES must not be empty'
+  for entry in "${IMAGEBUILDER_REPOSITORIES[@]}"; do
+    imagebuilder_parse_repository "$entry" url sha256 || die 'invalid IMAGEBUILDER_REPOSITORIES entry'
+  done
+
+  declare -p IMAGEBUILDER_PATCHED_PACKAGES >/dev/null 2>&1 ||
+    die 'ImageBuilder builds require IMAGEBUILDER_PATCHED_PACKAGES'
+  ((${#IMAGEBUILDER_PATCHED_PACKAGES[@]} > 0)) || die 'IMAGEBUILDER_PATCHED_PACKAGES must not be empty'
+  for package in "${IMAGEBUILDER_PATCHED_PACKAGES[@]}"; do
+    [[ "$package" =~ ^[a-z0-9][a-z0-9+._-]*$ ]] ||
+      die "unsupported IMAGEBUILDER_PATCHED_PACKAGES entry: $package"
+  done
+
+  for dest in "${PINNED_PATCH_DESTS[@]}"; do
+    patch_package_for_destination "$dest" >/dev/null ||
+      die "ImageBuilder builds can only rebuild mac80211 patches: $dest; use --build-method source"
+  done
+
+  # Local feeds only repackage prebuilt APKs, which ImageBuilder builds inject
+  # directly. Anything else needs the full source tree.
+  if declare -p LOCAL_FEED_INSTALLS >/dev/null 2>&1; then
+    for install in "${LOCAL_FEED_INSTALLS[@]}"; do
+      package="${install#*:}"
+      found=0
+      if declare -p PREBUILT_APKS >/dev/null 2>&1; then
+        for prebuilt_entry in "${PREBUILT_APKS[@]}"; do
+          prebuilt_apk_parse_entry "$prebuilt_entry" prebuilt_name file url sha256 ||
+            die 'invalid PREBUILT_APKS entry'
+          if [[ "$prebuilt_name" == "$package" ]]; then
+            found=1
+            break
+          fi
+        done
+      fi
+      ((found)) ||
+        die "local feed package $package has no PREBUILT_APKS entry; use --build-method source"
+    done
+  fi
+}
+
+# Source packages that own the pinned patches, in first-use order.
+sdk_source_packages() {
+  local dest package
+  local -A seen=()
+
+  for dest in "${PINNED_PATCH_DESTS[@]}"; do
+    package="$(patch_package_for_destination "$dest")" || return 1
+    [[ -z "${seen[$package]:-}" ]] || continue
+    seen[$package]=1
+    printf '%s\n' "$package"
+  done
+}
+
+expected_sdk_feeds() {
+  printf 'src-git --root=package base %s^%s\n' "$OPENWRT_REPO_URL" "$OPENWRT_REF"
+  printf 'src-git packages %s^%s\n' "$FEED_PACKAGES_URL" "$FEED_PACKAGES_REF"
+  printf 'src-git luci %s^%s\n' "$FEED_LUCI_URL" "$FEED_LUCI_REF"
+  printf 'src-git routing %s^%s\n' "$FEED_ROUTING_URL" "$FEED_ROUTING_REF"
+  printf 'src-git telephony %s^%s\n' "$FEED_TELEPHONY_URL" "$FEED_TELEPHONY_REF"
+  printf 'src-git video %s^%s\n' "$FEED_VIDEO_URL" "$FEED_VIDEO_REF"
+}
+
+# The official SDK records the exact OpenWrt and feed commits of its release.
+# They must equal the lock pins so the lock describes what is shipped.
+verify_sdk_feeds() {
+  local expected actual
+
+  expected="$(expected_sdk_feeds)"
+  actual="$(grep -Ev '^[[:space:]]*(#|$)' "$SDK_DIR/feeds.conf.default")"
+  if [[ "$actual" != "$expected" ]]; then
+    printf 'expected SDK feeds:\n%s\nactual SDK feeds:\n%s\n' "$expected" "$actual" >&2
+    die 'SDK feeds.conf.default does not match the lock OpenWrt and feed pins'
+  fi
+}
+
+extract_pinned_archive() {
+  local archive="$1"
+  local dest="$2"
+
+  [[ ! -e "$dest" ]] || die "refusing to extract over an existing path: $dest"
+  mkdir -p "$dest"
+  tar --zstd -xf "$archive" -C "$dest" --strip-components=1 --no-same-owner
+}
+
+prepare_sdk() {
+  local archive package
+
+  archive="$DL_DIR/$(basename -- "$SDK_URL")"
+  log "Fetching pinned OpenWrt SDK"
+  fetch_verified_file "$SDK_URL" "$archive" "$SDK_SHA256"
+  log "Extracting OpenWrt SDK"
+  extract_pinned_archive "$archive" "$SDK_DIR"
+  verify_sdk_feeds
+
+  log "Writing pinned SDK base feed definition"
+  expected_sdk_feeds | head -n1 >"$SDK_DIR/feeds.conf"
+  (
+    cd "$SDK_DIR"
+    ./scripts/feeds update base
+  )
+  verify_checkout "$SDK_DIR/feeds/base_root" "$OPENWRT_REF"
+
+  for package in "${SDK_SOURCE_PACKAGES[@]}"; do
+    log "Installing SDK package: $package"
+    (
+      cd "$SDK_DIR"
+      ./scripts/feeds install "$package"
+    )
+  done
+  apply_pinned_patches
+
+  # The SDK's Config-build.in carries the release package selection, so
+  # defconfig selects the same packages and options as the release build.
+  log "Writing SDK config"
+  (
+    cd "$SDK_DIR"
+    make defconfig
+  )
+  for package in "${IMAGEBUILDER_PATCHED_PACKAGES[@]}"; do
+    grep -Eqx "CONFIG_PACKAGE_$package=[my]" "$SDK_DIR/.config" ||
+      die "SDK config does not select patched package $package"
+  done
+}
+
+sdk_package_options() {
+  grep -E '^(# )?CONFIG_PACKAGE_(MAC80211|CFG80211)_[A-Z0-9_]+( is not set|=)' "$1" | LC_ALL=C sort
+}
+
+# The ImageBuilder .config is the release build config. The SDK must build
+# the patched package with the same package options, or the patched module
+# would not match the official modules it is loaded with.
+verify_sdk_package_options() {
+  local expected actual
+
+  expected="$(sdk_package_options "$IB_DIR/.config")" ||
+    die 'ImageBuilder config has no mac80211 package options'
+  actual="$(sdk_package_options "$SDK_DIR/.config")" ||
+    die 'SDK config has no mac80211 package options'
+  if [[ "$actual" != "$expected" ]]; then
+    printf 'expected mac80211 package options:\n%s\nactual SDK options:\n%s\n' "$expected" "$actual" >&2
+    die 'SDK mac80211 package options differ from the release ImageBuilder config'
+  fi
+}
+
+prepare_imagebuilder() {
+  local archive
+
+  archive="$DL_DIR/$(basename -- "$IMAGEBUILDER_URL")"
+  log "Fetching pinned OpenWrt ImageBuilder"
+  fetch_verified_file "$IMAGEBUILDER_URL" "$archive" "$IMAGEBUILDER_SHA256"
+  log "Extracting OpenWrt ImageBuilder"
+  extract_pinned_archive "$archive" "$IB_DIR"
+  [[ -d "$IB_DIR/packages" ]] || die "ImageBuilder has no packages directory: $IB_DIR"
+  # Every image starts from the shipped package directory plus this run's
+  # injected packages.
+  mv -- "$IB_DIR/packages" "$IB_PRISTINE_PACKAGES_DIR"
+}
+
+verify_imagebuilder_tree() {
+  local expected actual entry url sha256
+
+  grep -Fqx 'CONFIG_SIGNATURE_CHECK=y' "$IB_DIR/.config" ||
+    die 'ImageBuilder does not enforce repository signatures'
+
+  expected="$(
+    for entry in "${IMAGEBUILDER_REPOSITORIES[@]}"; do
+      imagebuilder_parse_repository "$entry" url sha256
+      printf '%s\n' "$url"
+    done
+  )"
+  actual="$(grep -Ev '^[[:space:]]*(#|$)' "$IB_DIR/repositories")"
+  if [[ "$actual" != "$expected" ]]; then
+    printf 'expected ImageBuilder repositories:\n%s\nactual ImageBuilder repositories:\n%s\n' \
+      "$expected" "$actual" >&2
+    die 'ImageBuilder repositories do not match IMAGEBUILDER_REPOSITORIES'
+  fi
+}
+
+# Fetch every pinned repository index into a content-addressed store. Release
+# indexes are rebuilt upstream, so a changed index fails closed until the
+# lock is refreshed with scripts/pin-imagebuilder.sh.
+fetch_imagebuilder_indexes() {
+  local entry url sha256
+
+  for entry in "${IMAGEBUILDER_REPOSITORIES[@]}"; do
+    imagebuilder_parse_repository "$entry" url sha256 || die 'invalid IMAGEBUILDER_REPOSITORIES entry'
+    fetch_verified_file "$url" "$IB_INDEX_STORE/$sha256.adb" "$sha256" \
+      'the upstream index changed; refresh the lock with scripts/pin-imagebuilder.sh'
+  done
+}
+
+# apk reuses a cached index younger than its cache age, so freshly seeded
+# pinned indexes are what it resolves and verifies packages against.
+seed_imagebuilder_apk_cache() {
+  local entry url sha256 name tmp
+
+  mkdir -p "$IB_APK_CACHE"
+  for entry in "${IMAGEBUILDER_REPOSITORIES[@]}"; do
+    imagebuilder_parse_repository "$entry" url sha256 || die 'invalid IMAGEBUILDER_REPOSITORIES entry'
+    name="$(imagebuilder_index_cache_name "$url")"
+    tmp="$(mktemp "$IB_APK_CACHE/.$name.XXXXXXXX")"
+    cp -- "$IB_INDEX_STORE/$sha256.adb" "$tmp"
+    verify_sha256 "$tmp" "$sha256"
+    mv -f -- "$tmp" "$IB_APK_CACHE/$name"
+  done
+
+  if [[ -e "$IB_DIR/dl" && ! -L "$IB_DIR/dl" ]]; then
+    rm -rf -- "$IB_DIR/dl"
+  fi
+  ln -sfn -- "$IB_APK_CACHE" "$IB_DIR/dl"
+}
+
+verify_imagebuilder_apk_cache() {
+  local entry url sha256 name
+
+  for entry in "${IMAGEBUILDER_REPOSITORIES[@]}"; do
+    imagebuilder_parse_repository "$entry" url sha256 || die 'invalid IMAGEBUILDER_REPOSITORIES entry'
+    name="$(imagebuilder_index_cache_name "$url")"
+    [[ -f "$IB_APK_CACHE/$name" && "$(sha256_of "$IB_APK_CACHE/$name")" == "$sha256" ]] ||
+      die "pinned repository index changed during the image build: $url"
+  done
+}
+
+compile_sdk_packages() {
+  local package
+  local -a make_args=(NO_DEPS=1 DL_DIR="$DL_DIR" CONFIG_BUILD_LOG=y)
+
+  # CONFIG_CCACHE has no prompt in the SDK, so pass it to make directly.
+  if [[ "$USE_CCACHE_MODE" == '1' ]]; then
+    make_args+=(CONFIG_CCACHE=y CONFIG_CCACHE_DIR="$CCACHE_DIR")
+  fi
+
+  # Package the SDK's prebuilt kernel modules first. Packaging checks each
+  # module's dependencies against the files its dependency packages provide,
+  # and backports drivers depend on kernel kmods such as kmod-usb-core. Only
+  # IMAGEBUILDER_PATCHED_PACKAGES reach the image.
+  log "Packaging SDK kernel modules"
+  (
+    cd "$SDK_DIR"
+    make -j"$MAKE_JOBS" "${make_args[@]}" package/linux/compile
+  )
+
+  for package in "${SDK_SOURCE_PACKAGES[@]}"; do
+    if [[ "$BUILD_MODE" != 'full' && -n "${REBUILD_PACKAGES_SET[$package]:-}" ]]; then
+      log "Cleaning SDK package: $package"
+      (
+        cd "$SDK_DIR"
+        make "${make_args[@]}" "package/$package/clean"
+      )
+    fi
+    log "Compiling SDK package: $package"
+    (
+      cd "$SDK_DIR"
+      make -j"$MAKE_JOBS" "${make_args[@]}" "package/$package/compile"
+    )
+  done
+}
+
+# Rebuild the ImageBuilder package directory from the shipped packages, the
+# SDK-built patched packages, and the pinned prebuilt APKs.
+assemble_imagebuilder_packages() {
+  local package apk entry name file url sha256
+
+  rm -rf -- "$IB_DIR/packages"
+  cp -a -- "$IB_PRISTINE_PACKAGES_DIR" "$IB_DIR/packages"
+  : >"$REPORT_DIR/imagebuilder-injected.tsv"
+
+  for package in "${IMAGEBUILDER_PATCHED_PACKAGES[@]}"; do
+    apk="$(imagebuilder_find_package_apk "$SDK_PACKAGE_DIR" "$package")" ||
+      die "SDK did not build patched package: $package"
+    [[ ! -e "$IB_DIR/packages/$(basename -- "$apk")" ]] ||
+      die "patched package collides with a shipped ImageBuilder package: $(basename -- "$apk")"
+    cp -- "$apk" "$IB_DIR/packages/"
+    printf 'sdk\t%s\t%s\t%s\n' "$package" "$(basename -- "$apk")" "$(sha256_of "$apk")" \
+      >>"$REPORT_DIR/imagebuilder-injected.tsv"
+  done
+
+  if declare -p PREBUILT_APKS >/dev/null 2>&1; then
+    for entry in "${PREBUILT_APKS[@]}"; do
+      prebuilt_apk_parse_entry "$entry" name file url sha256 || die 'invalid PREBUILT_APKS entry'
+      verify_sha256 "$DL_DIR/$file" "$sha256"
+      [[ ! -e "$IB_DIR/packages/$file" ]] ||
+        die "prebuilt APK collides with an ImageBuilder package: $file"
+      cp -- "$DL_DIR/$file" "$IB_DIR/packages/"
+      printf 'prebuilt\t%s\t%s\t%s\n' "$name" "$file" "$sha256" \
+        >>"$REPORT_DIR/imagebuilder-injected.tsv"
+    done
+  fi
+}
+
+# Prebuilt APKs may provide packages that the release metadata does not list;
+# apk installs them from the local package directory.
+imagebuilder_world_metadata() {
+  local entry name file url sha256
+
+  cat -- "$IB_DIR/.packageinfo"
+  if declare -p PREBUILT_APKS >/dev/null 2>&1; then
+    for entry in "${PREBUILT_APKS[@]}"; do
+      prebuilt_apk_parse_entry "$entry" name file url sha256 || die 'invalid PREBUILT_APKS entry'
+      printf '\nPackage: %s\n' "$name"
+    done
+  fi
+}
+
+build_imagebuilder_image() {
+  local info="$REPORT_DIR/imagebuilder-info.txt"
+  local packages
+
+  (
+    cd "$IB_DIR"
+    make -s info
+  ) >"$info"
+  imagebuilder_info_profile_packages "$info" "$DEVICE_ID" >/dev/null ||
+    die "ImageBuilder has no profile for $DEVICE_ID"
+
+  log "Resolving apk world package selections"
+  imagebuilder_world_metadata >"$REPORT_DIR/imagebuilder-packageinfo"
+  world_config_resolve "$REPORT_DIR/imagebuilder-packageinfo" \
+    "$REPORT_DIR/reference.world" "$REPORT_DIR/builtin-package-names.txt" \
+    | sort -u >"$REPORT_DIR/world-config.tsv"
+  # The captured world replaces the default package selection, so drop
+  # defaults the world neither lists nor provides.
+  {
+    awk -F '\t' '$2 != "-" { print $1 }' "$REPORT_DIR/world-config.tsv"
+    imagebuilder_default_removals "$info" "$DEVICE_ID" \
+      "$IB_DIR/.packageinfo" "$REPORT_DIR/world-config.tsv" ||
+      die 'failed to resolve ImageBuilder default package removals'
+  } >"$REPORT_DIR/imagebuilder-packages.txt"
+  packages="$(paste -sd ' ' "$REPORT_DIR/imagebuilder-packages.txt")"
+
+  rm -rf -- "$IB_BIN_DIR"
+  log "Assembling image with ImageBuilder"
+  (
+    cd "$IB_DIR"
+    make image PROFILE="$DEVICE_ID" PACKAGES="$packages" BIN_DIR="$IB_BIN_DIR"
+  )
+}
+
+# Compare one extracted package entry with the image root: regular files by
+# content, symlinks by target. Other entry types are not expected in a package.
+injected_entry_matches() {
+  local extracted="$1"
+  local installed="$2"
+
+  if [[ -L "$extracted" ]]; then
+    [[ -L "$installed" && "$(readlink -- "$extracted")" == "$(readlink -- "$installed")" ]]
+  elif [[ -f "$extracted" ]]; then
+    [[ -f "$installed" && ! -L "$installed" ]] && cmp -s -- "$extracted" "$installed"
+  else
+    return 1
+  fi
+}
+
+# Each injected package must be what landed in the image; apk could
+# otherwise satisfy a name with the equally versioned official package.
+verify_injected_packages() {
+  local rootfs kind name file sha256 extract_dir path count
+  local -a roots=()
+
+  mapfile -t roots < <(find "$IB_DIR/build_dir" -mindepth 2 -maxdepth 2 -type d -name "root-$TARGET")
+  ((${#roots[@]} == 1)) || die "expected one ImageBuilder rootfs, found ${#roots[@]}"
+  rootfs="${roots[0]}"
+
+  : >"$REPORT_DIR/imagebuilder-injected-files.tsv"
+  while IFS=$'\t' read -r kind name file sha256; do
+    extract_dir="$(mktemp -d "$BUILD_ROOT/.openwrt-ft-extract.XXXXXXXX")"
+    "$IB_DIR/staging_dir/host/bin/apk" extract --allow-untrusted --no-chown \
+      --destination "$extract_dir" "$IB_DIR/packages/$file" >/dev/null
+    count=0
+    while IFS= read -r -d '' path; do
+      path="${path#./}"
+      if ! injected_entry_matches "$extract_dir/$path" "$rootfs/$path"; then
+        rm -rf -- "$extract_dir"
+        die "image does not contain the injected $kind package file for $name: /$path"
+      fi
+      count=$((count + 1))
+    done < <(cd "$extract_dir" && find . ! -type d -print0)
+    rm -rf -- "$extract_dir"
+    ((count > 0)) || die "injected package has no files to verify: $name"
+    printf '%s\t%s\t%s\n' "$name" "$sha256" "$count" >>"$REPORT_DIR/imagebuilder-injected-files.tsv"
+  done <"$REPORT_DIR/imagebuilder-injected.tsv"
+}
+
+write_imagebuilder_repositories() {
+  local entry url sha256
+
+  for entry in "${IMAGEBUILDER_REPOSITORIES[@]}"; do
+    imagebuilder_parse_repository "$entry" url sha256
+    printf '%s\t%s\n' "$url" "$sha256"
+  done
+}
+
 validate_component() {
   local name="$1"
   local value="$2"
@@ -727,7 +1252,20 @@ else
   USE_CCACHE_MODE=0
 fi
 
-require_cmd awk cmp comm cp curl cut find flock git head install join make mkdir mktemp mv nproc realpath rm sed sha256sum sort tee xargs
+if [[ -n "$BUILD_METHOD_ARG" ]]; then
+  BUILD_METHOD="$BUILD_METHOD_ARG"
+else
+  BUILD_METHOD="${BUILD_METHOD:-${DEFAULT_BUILD_METHOD:-source}}"
+fi
+case "$BUILD_METHOD" in
+  source|imagebuilder) ;;
+  *) die "unsupported build method: $BUILD_METHOD (expected source or imagebuilder)" ;;
+esac
+
+require_cmd awk cmp comm cp curl cut find flock git head install join make mkdir mktemp mv nproc paste realpath rm sed sha256sum sort tee xargs
+if [[ "$BUILD_METHOD" == 'imagebuilder' ]]; then
+  require_cmd tar zstd
+fi
 
 PATCH_SOURCE_ABS="$(abs_path "$PATCH_SOURCE")"
 CONFIG_FRAGMENT_ABS="$(abs_path "$CONFIG_FRAGMENT")"
@@ -741,6 +1279,10 @@ verify_pinned_patch_hashes
 [[ -f "$WORLD_SOURCE_ABS" ]] || die "world source not found: $WORLD_SOURCE_ABS"
 [[ -f "$REFERENCE_MANIFEST_ABS" ]] || die "reference manifest not found: $REFERENCE_MANIFEST_ABS"
 verify_local_feed_digests
+if [[ "$BUILD_METHOD" == 'imagebuilder' ]]; then
+  imagebuilder_validate_lock
+  mapfile -t SDK_SOURCE_PACKAGES < <(sdk_source_packages)
+fi
 
 if [[ -n "$BUILD_ID_ARG" ]]; then
   BUILD_ID="$BUILD_ID_ARG"
@@ -750,7 +1292,7 @@ fi
 if [[ -n "$WORKSPACE_ID_ARG" ]]; then
   WORKSPACE_ID="$WORKSPACE_ID_ARG"
 else
-  WORKSPACE_ID="${WORKSPACE_ID:-$(openwrt_default_workspace_name)}"
+  WORKSPACE_ID="${WORKSPACE_ID:-$(openwrt_default_workspace_name "$BUILD_METHOD")}"
 fi
 if [[ -n "$BUILDER_ID_ARG" ]]; then
   BUILDER_ID="$BUILDER_ID_ARG"
@@ -800,13 +1342,15 @@ for rebuild_selector in "${REBUILD_PACKAGE_ARGS[@]}"; do
       REQUESTED_REBUILDS[mac80211]=1
       ;;
     local-feeds)
+      [[ "$BUILD_METHOD" == 'source' ]] ||
+        die 'ImageBuilder builds inject prebuilt APKs directly; local-feeds rebuilds need --build-method source'
       ((${#LOCAL_FEED_PACKAGE_PATHS[@]} > 0)) ||
         die 'local-feeds rebuild requested, but the lock has no LOCAL_FEED_INSTALLS'
       REQUESTED_REBUILDS[local-feeds]=1
       ;;
     all)
       REQUESTED_REBUILDS[mac80211]=1
-      if ((${#LOCAL_FEED_PACKAGE_PATHS[@]} > 0)); then
+      if [[ "$BUILD_METHOD" == 'source' ]] && ((${#LOCAL_FEED_PACKAGE_PATHS[@]} > 0)); then
         REQUESTED_REBUILDS[local-feeds]=1
       fi
       ;;
@@ -826,6 +1370,16 @@ BUILD_ROOT="$WORK_ROOT/$WORKSPACE_ID"
 [[ "$(dirname -- "$BUILD_ROOT")" == "$WORK_ROOT" ]] ||
   die "workspace must be a direct child of the work root: $BUILD_ROOT"
 [[ ! -L "$BUILD_ROOT" ]] || die "workspace must not be a symbolic link: $BUILD_ROOT"
+# Wrappers mount the workspace at one fixed path, so compiler command lines
+# and ccache entries are identical across workspaces and devices.
+if [[ -n "${WORKSPACE_PATH:-}" ]]; then
+  [[ "$WORKSPACE_PATH" == /* ]] || die "WORKSPACE_PATH must be absolute: $WORKSPACE_PATH"
+  [[ -d "$WORKSPACE_PATH" && ! -L "$WORKSPACE_PATH" ]] ||
+    die "WORKSPACE_PATH must be an existing directory: $WORKSPACE_PATH"
+  [[ "$WORKSPACE_PATH" -ef "$BUILD_ROOT" ]] ||
+    die "WORKSPACE_PATH must be the mounted workspace $BUILD_ROOT: $WORKSPACE_PATH"
+  BUILD_ROOT="$WORKSPACE_PATH"
+fi
 
 WORKSPACE_LOCK_DIR="$WORK_ROOT/.openwrt-ft-locks"
 [[ ! -L "$WORKSPACE_LOCK_DIR" ]] ||
@@ -853,18 +1407,32 @@ esac
 if ((FRESH_MODE)) && [[ -e "$BUILD_ROOT" ]]; then
   [[ -d "$BUILD_ROOT" && ! -L "$BUILD_ROOT" ]] ||
     die "refusing to replace unsafe workspace path: $BUILD_ROOT"
-  log "Removing workspace for fresh build: $BUILD_ROOT"
-  rm -rf -- "$BUILD_ROOT"
+  # Clear the contents only; the workspace may be a mount point.
+  log "Clearing workspace for fresh build: $BUILD_ROOT"
+  find "$BUILD_ROOT" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
 fi
 
 OPENWRT_DIR="$BUILD_ROOT/openwrt"
+SDK_DIR="$BUILD_ROOT/sdk"
+SDK_PACKAGE_DIR="$SDK_DIR/bin/targets/$TARGET/$SUBTARGET/packages"
+IB_DIR="$BUILD_ROOT/imagebuilder"
+IB_PRISTINE_PACKAGES_DIR="$IB_DIR/packages.pristine"
+IB_BIN_DIR="$BUILD_ROOT/imagebuilder-bin"
+if [[ "$BUILD_METHOD" == 'imagebuilder' ]]; then
+  BUILD_CONFIG_FILE="$SDK_DIR/.config"
+  PACKAGE_LOG_DIR="$SDK_DIR/logs"
+else
+  BUILD_CONFIG_FILE="$OPENWRT_DIR/.config"
+  PACKAGE_LOG_DIR="$OPENWRT_DIR/logs"
+fi
 REPORT_DIR="$BUILD_ROOT/reports"
 OUTPUT_DIR="$BUILD_ROOT/output"
 METADATA_DIR="$OUTPUT_DIR/metadata"
 LOG_DIR="$OUTPUT_DIR/logs"
 BUILD_LOG="$LOG_DIR/build.log"
 OPENWRT_LOG_OUTPUT_DIR="$LOG_DIR/openwrt"
-WORKSPACE_STATE_SCHEMA='2'
+# Schema 3 added the build method and the fixed workspace path.
+WORKSPACE_STATE_SCHEMA='3'
 STATE_DIR="$BUILD_ROOT/.openwrt-ft-state"
 COMPATIBILITY_FILE="$STATE_DIR/compatibility.tsv"
 # prepared.tsv is written once a full build has fixed its inputs; a failed
@@ -875,6 +1443,9 @@ SUCCESS_FILE="$STATE_DIR/last-success.tsv"
 if [[ -e "$BUILD_ROOT" ]]; then
   [[ -d "$BUILD_ROOT" && ! -L "$BUILD_ROOT" ]] ||
     die "workspace path is not a safe directory: $BUILD_ROOT"
+fi
+# An empty directory is a workspace mount point awaiting its first build.
+if [[ -e "$BUILD_ROOT" && -n "$(find "$BUILD_ROOT" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
   if [[ -f "$SUCCESS_FILE" ]]; then
     BUILD_MODE='incremental'
     REFERENCE_STATE_FILE="$SUCCESS_FILE"
@@ -899,27 +1470,18 @@ if [[ "$USE_CCACHE_MODE" == '1' ]]; then
   export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-20G}"
 fi
 
+IB_INDEX_STORE="$CACHE_ROOT/imagebuilder/indexes"
+if [[ "$BUILD_METHOD" == 'imagebuilder' ]]; then
+  # Builds with the same index pins share one apk package cache.
+  IB_PIN_SET="$(printf '%s\n' "${IMAGEBUILDER_REPOSITORIES[@]}" | sha256sum | cut -c1-16)"
+  IB_APK_CACHE="$CACHE_ROOT/imagebuilder/apk-cache/$IB_PIN_SET"
+fi
+
 declare -A REBUILD_PACKAGES_SET=()
 REBUILT_PACKAGES=()
 
-if [[ "$BUILD_MODE" != 'full' ]]; then
-  [[ -f "$COMPATIBILITY_FILE" ]] ||
-    die "workspace has no compatible state marker: $BUILD_ROOT; rerun with --fresh"
-
-  current_compatibility="$(mktemp "$WORK_ROOT/.openwrt-ft-compatibility.XXXXXXXX")"
-  write_compatibility_manifest >"$current_compatibility"
-  if ! cmp -s "$COMPATIBILITY_FILE" "$current_compatibility"; then
-    printf 'error: workspace is incompatible; differing compatibility keys:\n' >&2
-    report_compatibility_mismatches "$COMPATIBILITY_FILE" "$current_compatibility" >&2
-    rm -f -- "$current_compatibility"
-    die 'rerun with --fresh to replace the workspace'
-  fi
-  rm -f -- "$current_compatibility"
-
-  stored_schema="$(state_value "$REFERENCE_STATE_FILE" state_schema)" ||
-    die "workspace build state is missing state_schema: $REFERENCE_STATE_FILE; rerun with --fresh"
-  [[ "$stored_schema" == "$WORKSPACE_STATE_SCHEMA" ]] ||
-    die "workspace build state schema is $stored_schema, expected $WORKSPACE_STATE_SCHEMA; rerun with --fresh"
+verify_source_workspace() {
+  local tag_ref
 
   [[ -d "$OPENWRT_DIR/.git" && -f "$OPENWRT_DIR/.config" ]] ||
     die "workspace checkout is incomplete: $BUILD_ROOT; rerun with --fresh"
@@ -947,16 +1509,53 @@ if [[ "$BUILD_MODE" != 'full' ]]; then
     [[ "$tag_ref" == "$OPENWRT_REF" ]] ||
       die "tag $OPENWRT_TAG does not resolve to $OPENWRT_REF"
   fi
+}
+
+verify_imagebuilder_workspace() {
+  [[ -f "$SDK_DIR/.config" && -d "$SDK_DIR/feeds/base_root/.git" &&
+    -f "$IB_DIR/Makefile" && -d "$IB_PRISTINE_PACKAGES_DIR" ]] ||
+    die "workspace SDK or ImageBuilder is incomplete: $BUILD_ROOT; rerun with --fresh"
+  verify_sdk_feeds
+  verify_checkout "$SDK_DIR/feeds/base_root" "$OPENWRT_REF"
+  # The base feed root is OpenWrt's top level, so patch destinations are
+  # also its repository paths.
+  verify_tracked_files_clean "$SDK_DIR/feeds/base_root" "${PINNED_PATCH_DESTS[@]}"
+}
+
+if [[ "$BUILD_MODE" != 'full' ]]; then
+  [[ -f "$COMPATIBILITY_FILE" ]] ||
+    die "workspace has no compatible state marker: $BUILD_ROOT; rerun with --fresh"
+
+  current_compatibility="$(mktemp "$WORK_ROOT/.openwrt-ft-compatibility.XXXXXXXX")"
+  write_compatibility_manifest >"$current_compatibility"
+  if ! cmp -s "$COMPATIBILITY_FILE" "$current_compatibility"; then
+    printf 'error: workspace is incompatible; differing compatibility keys:\n' >&2
+    report_compatibility_mismatches "$COMPATIBILITY_FILE" "$current_compatibility" >&2
+    rm -f -- "$current_compatibility"
+    die 'rerun with --fresh to replace the workspace'
+  fi
+  rm -f -- "$current_compatibility"
+
+  stored_schema="$(state_value "$REFERENCE_STATE_FILE" state_schema)" ||
+    die "workspace build state is missing state_schema: $REFERENCE_STATE_FILE; rerun with --fresh"
+  [[ "$stored_schema" == "$WORKSPACE_STATE_SCHEMA" ]] ||
+    die "workspace build state schema is $stored_schema, expected $WORKSPACE_STATE_SCHEMA; rerun with --fresh"
+
+  if [[ "$BUILD_METHOD" == 'imagebuilder' ]]; then
+    verify_imagebuilder_workspace
+  else
+    verify_source_workspace
+  fi
 
   stored_config_sha="$(state_value "$REFERENCE_STATE_FILE" final_config_sha256)" ||
     die "workspace build state is missing final_config_sha256; rerun with --fresh"
-  verify_sha256 "$OPENWRT_DIR/.config" "$stored_config_sha"
+  verify_sha256 "$BUILD_CONFIG_FILE" "$stored_config_sha"
 
   for i in "${!PINNED_PATCH_SHA256S[@]}"; do
     printf -v index '%03d' "$i"
     previous_patch_sha="$(state_value "$REFERENCE_STATE_FILE" "patch.$index.sha256")" ||
       die "workspace build state is missing patch.$index.sha256; rerun with --fresh"
-    patch_dest_abs="$OPENWRT_DIR/${PINNED_PATCH_DESTS[$i]}"
+    patch_dest_abs="$(patch_destination_path "${PINNED_PATCH_DESTS[$i]}")"
     [[ -f "$patch_dest_abs" ]] ||
       die "workspace patch destination is missing: ${PINNED_PATCH_DESTS[$i]}; rerun with --fresh"
     destination_patch_sha="$(sha256sum "$patch_dest_abs" | awk '{print $1}')"
@@ -972,21 +1571,25 @@ if [[ "$BUILD_MODE" != 'full' ]]; then
     fi
   done
 
-  current_state="$(mktemp "$WORK_ROOT/.openwrt-ft-state-current.XXXXXXXX")"
-  write_build_state >"$current_state"
-  changed_local_inputs="$(
-    awk -F '\t' '
-      NR == FNR { previous[$1] = $2; next }
-      $1 ~ /^(local_feed\.[0-9]+\.sha256|prebuilt_apk\.[0-9]+)$/ &&
-        (!($1 in previous) || previous[$1] != $2) { print $1 }
-    ' "$REFERENCE_STATE_FILE" "$current_state"
-  )"
-  rm -f -- "$current_state"
-  if [[ -n "$changed_local_inputs" ]]; then
-    ((${#LOCAL_FEED_PACKAGE_PATHS[@]} > 0)) ||
-      die "local feed or prebuilt APK inputs changed without LOCAL_FEED_INSTALLS; rerun with --fresh"
-    log "Changed local package inputs: ${changed_local_inputs//$'\n'/, }"
-    REBUILD_PACKAGES_SET[local-feeds]=1
+  # ImageBuilder builds reassemble the image from the current prebuilt APKs
+  # on every run, so only source builds rebuild local feed packages.
+  if [[ "$BUILD_METHOD" == 'source' ]]; then
+    current_state="$(mktemp "$WORK_ROOT/.openwrt-ft-state-current.XXXXXXXX")"
+    write_build_state >"$current_state"
+    changed_local_inputs="$(
+      awk -F '\t' '
+        NR == FNR { previous[$1] = $2; next }
+        $1 ~ /^(local_feed\.[0-9]+\.sha256|prebuilt_apk\.[0-9]+)$/ &&
+          (!($1 in previous) || previous[$1] != $2) { print $1 }
+      ' "$REFERENCE_STATE_FILE" "$current_state"
+    )"
+    rm -f -- "$current_state"
+    if [[ -n "$changed_local_inputs" ]]; then
+      ((${#LOCAL_FEED_PACKAGE_PATHS[@]} > 0)) ||
+        die "local feed or prebuilt APK inputs changed without LOCAL_FEED_INSTALLS; rerun with --fresh"
+      log "Changed local package inputs: ${changed_local_inputs//$'\n'/, }"
+      REBUILD_PACKAGES_SET[local-feeds]=1
+    fi
   fi
 fi
 
@@ -1004,7 +1607,7 @@ else
 fi
 
 if [[ "$BUILD_MODE" != 'full' ]]; then
-  rm -rf -- "$REPORT_DIR" "$OUTPUT_DIR" "$OPENWRT_DIR/logs"
+  rm -rf -- "$REPORT_DIR" "$OUTPUT_DIR" "$PACKAGE_LOG_DIR"
 fi
 mkdir -p "$BUILD_ROOT" "$DL_DIR" "$REPORT_DIR" "$OUTPUT_DIR" "$METADATA_DIR" "$LOG_DIR"
 if [[ "$USE_CCACHE_MODE" == '1' ]]; then
@@ -1027,9 +1630,9 @@ write_ccache_stats() {
 }
 
 copy_openwrt_logs() {
-  [[ -d "${OPENWRT_DIR:-}/logs" ]] || return 0
+  [[ -d "${PACKAGE_LOG_DIR:-}" ]] || return 0
   mkdir -p "$OPENWRT_LOG_OUTPUT_DIR" || return 0
-  cp -a "$OPENWRT_DIR/logs/." "$OPENWRT_LOG_OUTPUT_DIR/" || return 0
+  cp -a "$PACKAGE_LOG_DIR/." "$OPENWRT_LOG_OUTPUT_DIR/" || return 0
 }
 
 finalize_logs() {
@@ -1040,180 +1643,271 @@ finalize_logs() {
 }
 trap finalize_logs EXIT
 
+# Write the workspace markers once a full build has fixed its inputs.
+write_prepared_state() {
+  local state_dir_tmp
+
+  state_dir_tmp="$(mktemp -d "$BUILD_ROOT/.openwrt-ft-state.XXXXXXXX")"
+  write_compatibility_manifest >"$state_dir_tmp/compatibility.tsv"
+  write_build_state >"$state_dir_tmp/prepared.tsv"
+  [[ ! -e "$STATE_DIR" ]] ||
+    die "workspace state unexpectedly appeared during the build: $STATE_DIR"
+  mv "$state_dir_tmp" "$STATE_DIR"
+}
+
+# Partial clones fetch commits and trees, and download file contents only
+# for checked-out paths. OpenWrt version stamps need history, not old blobs.
+clone_pinned_repository() {
+  local url="$1"
+  local dir="$2"
+  local ref="$3"
+  local branch="${4:-}"
+
+  git clone --filter=blob:none --no-checkout "$url" "$dir"
+  if [[ -n "$branch" ]]; then
+    git -C "$dir" checkout -q -b "$branch" "$ref"
+  else
+    git -C "$dir" checkout -q --detach "$ref"
+  fi
+  verify_checkout "$dir" "$ref"
+  verify_not_shallow "$dir"
+}
+
+run_source_build() {
+  local tag_ref rebuild_selector rebuild_path
+  local -a rebuild_paths=() stale_target_images=()
+
+  if [[ "$BUILD_MODE" == 'full' ]]; then
+    log "Cloning OpenWrt core"
+    clone_pinned_repository "$OPENWRT_REPO_URL" "$OPENWRT_DIR" "$OPENWRT_REF"
+
+    if [[ -n "${OPENWRT_TAG:-}" ]]; then
+      tag_ref="$(git -C "$OPENWRT_DIR" rev-list -n1 "$OPENWRT_TAG")"
+      [[ "$tag_ref" == "$OPENWRT_REF" ]] ||
+        die "tag $OPENWRT_TAG does not resolve to $OPENWRT_REF"
+    fi
+
+    log "Writing pinned feed definitions"
+    write_feeds_conf
+
+    # scripts/feeds keeps an existing pinned checkout. Its own clone would
+    # fetch every historical blob; the branch name matches its checkout.
+    log "Cloning pinned feeds"
+    clone_pinned_repository "$FEED_PACKAGES_URL" "$OPENWRT_DIR/feeds/packages" "$FEED_PACKAGES_REF" "$FEED_PACKAGES_REF"
+    clone_pinned_repository "$FEED_LUCI_URL" "$OPENWRT_DIR/feeds/luci" "$FEED_LUCI_REF" "$FEED_LUCI_REF"
+    clone_pinned_repository "$FEED_ROUTING_URL" "$OPENWRT_DIR/feeds/routing" "$FEED_ROUTING_REF" "$FEED_ROUTING_REF"
+    clone_pinned_repository "$FEED_TELEPHONY_URL" "$OPENWRT_DIR/feeds/telephony" "$FEED_TELEPHONY_REF" "$FEED_TELEPHONY_REF"
+    clone_pinned_repository "$FEED_VIDEO_URL" "$OPENWRT_DIR/feeds/video" "$FEED_VIDEO_REF" "$FEED_VIDEO_REF"
+
+    log "Updating feeds"
+    (
+      cd "$OPENWRT_DIR"
+      ./scripts/feeds update -a
+    )
+
+    verify_checkout "$OPENWRT_DIR/feeds/packages" "$FEED_PACKAGES_REF"
+    verify_checkout "$OPENWRT_DIR/feeds/luci" "$FEED_LUCI_REF"
+    verify_checkout "$OPENWRT_DIR/feeds/routing" "$FEED_ROUTING_REF"
+    verify_checkout "$OPENWRT_DIR/feeds/telephony" "$FEED_TELEPHONY_REF"
+    verify_checkout "$OPENWRT_DIR/feeds/video" "$FEED_VIDEO_REF"
+
+    verify_not_shallow "$OPENWRT_DIR/feeds/packages"
+    verify_not_shallow "$OPENWRT_DIR/feeds/luci"
+    verify_not_shallow "$OPENWRT_DIR/feeds/routing"
+    verify_not_shallow "$OPENWRT_DIR/feeds/telephony"
+    verify_not_shallow "$OPENWRT_DIR/feeds/video"
+
+    log "Installing feeds"
+    (
+      cd "$OPENWRT_DIR"
+      ./scripts/feeds install -a
+    )
+    install_local_feed_packages
+
+    apply_pinned_patches
+
+    log "Writing device config"
+    cp "$CONFIG_FRAGMENT_ABS" "$OPENWRT_DIR/.config"
+    append_extra_config
+    write_build_options_config
+
+    (
+      cd "$OPENWRT_DIR"
+      make defconfig
+    )
+  else
+    apply_pinned_patches
+  fi
+
+  log "Resolving apk world package selections"
+  world_config_resolve "$OPENWRT_DIR/tmp/.packageinfo" \
+    "$REPORT_DIR/reference.world" "$REPORT_DIR/builtin-package-names.txt" \
+    | sort -u >"$REPORT_DIR/world-config.tsv"
+  world_config_missing "$REPORT_DIR/world-config.tsv" "$OPENWRT_DIR/.config" \
+    >"$REPORT_DIR/world-unselected-package-names.txt"
+  if [[ "$BUILD_MODE" == 'full' && -s "$REPORT_DIR/world-unselected-package-names.txt" ]]; then
+    log "Selecting captured apk world packages in device config"
+    world_config_apply "$REPORT_DIR/world-config.tsv" "$OPENWRT_DIR/.config" \
+      >"$OPENWRT_DIR/.config.world"
+    mv "$OPENWRT_DIR/.config.world" "$OPENWRT_DIR/.config"
+    (
+      cd "$OPENWRT_DIR"
+      make defconfig
+    )
+    world_config_missing "$REPORT_DIR/world-config.tsv" "$OPENWRT_DIR/.config" \
+      >"$REPORT_DIR/world-unselected-package-names.txt"
+  fi
+  cp "$OPENWRT_DIR/.config" "$REPORT_DIR/final.config"
+  if [[ -s "$REPORT_DIR/world-unselected-package-names.txt" ]]; then
+    cat "$REPORT_DIR/world-unselected-package-names.txt" >&2
+    die "apk world packages cannot be selected for this target; see $REPORT_DIR/world-unselected-package-names.txt"
+  fi
+
+  if [[ "$BUILD_MODE" == 'full' ]]; then
+    write_prepared_state
+  fi
+
+  configure_ccache_environment
+
+  if [[ "$BUILD_MODE" != 'incremental' ]]; then
+    log "Downloading sources"
+    (
+      cd "$OPENWRT_DIR"
+      make DL_DIR="$DL_DIR" download -j"$DOWNLOAD_JOBS"
+    )
+  fi
+
+  if [[ "$BUILD_MODE" != 'full' ]]; then
+    for rebuild_selector in "${REBUILT_PACKAGES[@]}"; do
+      case "$rebuild_selector" in
+        mac80211)
+          rebuild_paths=('package/kernel/mac80211')
+          ;;
+        local-feeds)
+          rebuild_paths=("${LOCAL_FEED_PACKAGE_PATHS[@]}")
+          ;;
+        *)
+          die "internal error: unsupported incremental package: $rebuild_selector"
+          ;;
+      esac
+      for rebuild_path in "${rebuild_paths[@]}"; do
+        log "Cleaning incremental package: $rebuild_path"
+        (
+          cd "$OPENWRT_DIR"
+          make DL_DIR="$DL_DIR" "$rebuild_path/clean"
+        )
+        log "Compiling incremental package: $rebuild_path"
+        (
+          cd "$OPENWRT_DIR"
+          make DL_DIR="$DL_DIR" -j"$MAKE_JOBS" "$rebuild_path/compile"
+        )
+      done
+    done
+
+    ARTIFACT_DIR="$OPENWRT_DIR/bin/targets/$TARGET/$SUBTARGET"
+    if [[ -d "$ARTIFACT_DIR" ]]; then
+      mapfile -d '' -t stale_target_images < <(
+        find "$ARTIFACT_DIR" -maxdepth 1 -type f -name "*${DEVICE_ID}*" -print0
+      )
+      if ((${#stale_target_images[@]} > 0)); then
+        log "Removing ${#stale_target_images[@]} stale target artifact(s)"
+        rm -f -- "${stale_target_images[@]}"
+      fi
+    fi
+  fi
+
+  log "Building image"
+  write_ccache_stats "before build"
+  (
+    cd "$OPENWRT_DIR"
+    make DL_DIR="$DL_DIR" -j"$MAKE_JOBS"
+  )
+  write_ccache_stats "after build"
+  cp "$OPENWRT_DIR/.config" "$REPORT_DIR/final.config"
+  copy_openwrt_logs
+
+  ARTIFACT_DIR="$OPENWRT_DIR/bin/targets/$TARGET/$SUBTARGET"
+  SYSUPGRADE_IMAGE="$(find "$ARTIFACT_DIR" -maxdepth 1 -type f -name "*${DEVICE_ID}*sysupgrade.bin" | sort | head -n1)"
+  INITRAMFS_IMAGE="$(find "$ARTIFACT_DIR" -maxdepth 1 -type f -name "*${DEVICE_ID}*initramfs-kernel.bin" | sort | head -n1)"
+  BUILT_MANIFEST="$(find "$ARTIFACT_DIR" -maxdepth 1 -type f -name "*${DEVICE_ID}.manifest" | sort | head -n1)"
+
+  [[ -n "$SYSUPGRADE_IMAGE" ]] || die "sysupgrade image not found in $ARTIFACT_DIR"
+  [[ -n "$INITRAMFS_IMAGE" ]] || die "initramfs image not found in $ARTIFACT_DIR"
+  [[ -n "$BUILT_MANIFEST" ]] || die "manifest not found in $ARTIFACT_DIR"
+}
+
+run_imagebuilder_build() {
+  # A changed upstream index should fail before the SDK compile.
+  log "Verifying pinned ImageBuilder repository indexes"
+  fetch_imagebuilder_indexes
+
+  if [[ "$BUILD_MODE" == 'full' ]]; then
+    prepare_sdk
+    prepare_imagebuilder
+    verify_imagebuilder_tree
+    write_prepared_state
+  else
+    apply_pinned_patches
+    verify_imagebuilder_tree
+  fi
+  verify_sdk_package_options
+  cp "$SDK_DIR/.config" "$REPORT_DIR/sdk.config"
+
+  configure_ccache_environment
+  write_ccache_stats "before build"
+  compile_sdk_packages
+  write_ccache_stats "after build"
+  copy_openwrt_logs
+
+  assemble_imagebuilder_packages
+  seed_imagebuilder_apk_cache
+  build_imagebuilder_image
+  verify_imagebuilder_apk_cache
+  verify_injected_packages
+
+  IMAGEBUILDER_KERNEL_VERSION="$(imagebuilder_kernel_version "$IB_PRISTINE_PACKAGES_DIR")" ||
+    die 'failed to read the ImageBuilder kernel version'
+  ARTIFACT_DIR="$IB_BIN_DIR"
+  SYSUPGRADE_IMAGE="$(find "$ARTIFACT_DIR" -maxdepth 1 -type f -name "*${DEVICE_ID}*sysupgrade.bin" | sort | head -n1)"
+  # The ImageBuilder ships only the kernel package; initramfs images need
+  # --build-method source.
+  INITRAMFS_IMAGE=''
+  BUILT_MANIFEST="$(find "$ARTIFACT_DIR" -maxdepth 1 -type f -name "*${DEVICE_ID}.manifest" | sort | head -n1)"
+
+  [[ -n "$SYSUPGRADE_IMAGE" ]] || die "sysupgrade image not found in $ARTIFACT_DIR"
+  [[ -n "$BUILT_MANIFEST" ]] || die "manifest not found in $ARTIFACT_DIR"
+}
+
 exec > >(tee -a "$BUILD_LOG") 2>&1
 
 log "Workspace: $BUILD_ROOT"
 log "Session: $BUILD_ID"
+log "Build method: $BUILD_METHOD"
 log "Build mode: $BUILD_MODE"
 log "Build log: $BUILD_LOG"
 extract_world >"$REPORT_DIR/reference.world"
 [[ -s "$REPORT_DIR/reference.world" ]] || die "failed to extract world entries from $WORLD_SOURCE_ABS"
 write_manifest_builtin_package_names | sort -u >"$REPORT_DIR/builtin-package-names.txt"
 download_prebuilt_apks
-if [[ "$BUILD_MODE" == 'full' ]]; then
-  log "Cloning OpenWrt core"
-  git clone "$OPENWRT_REPO_URL" "$OPENWRT_DIR"
-  git -C "$OPENWRT_DIR" checkout --detach "$OPENWRT_REF"
-  verify_checkout "$OPENWRT_DIR" "$OPENWRT_REF"
-  verify_not_shallow "$OPENWRT_DIR"
-
-  if [[ -n "${OPENWRT_TAG:-}" ]]; then
-    tag_ref="$(git -C "$OPENWRT_DIR" rev-list -n1 "$OPENWRT_TAG")"
-    [[ "$tag_ref" == "$OPENWRT_REF" ]] ||
-      die "tag $OPENWRT_TAG does not resolve to $OPENWRT_REF"
-  fi
-
-  log "Writing pinned feed definitions"
-  write_feeds_conf
-
-  log "Updating feeds"
-  (
-    cd "$OPENWRT_DIR"
-    ./scripts/feeds update -a
-  )
-
-  verify_checkout "$OPENWRT_DIR/feeds/packages" "$FEED_PACKAGES_REF"
-  verify_checkout "$OPENWRT_DIR/feeds/luci" "$FEED_LUCI_REF"
-  verify_checkout "$OPENWRT_DIR/feeds/routing" "$FEED_ROUTING_REF"
-  verify_checkout "$OPENWRT_DIR/feeds/telephony" "$FEED_TELEPHONY_REF"
-  verify_checkout "$OPENWRT_DIR/feeds/video" "$FEED_VIDEO_REF"
-
-  verify_not_shallow "$OPENWRT_DIR/feeds/packages"
-  verify_not_shallow "$OPENWRT_DIR/feeds/luci"
-  verify_not_shallow "$OPENWRT_DIR/feeds/routing"
-  verify_not_shallow "$OPENWRT_DIR/feeds/telephony"
-  verify_not_shallow "$OPENWRT_DIR/feeds/video"
-
-  log "Installing feeds"
-  (
-    cd "$OPENWRT_DIR"
-    ./scripts/feeds install -a
-  )
-  install_local_feed_packages
-
-  apply_pinned_patches
-
-  log "Writing device config"
-  cp "$CONFIG_FRAGMENT_ABS" "$OPENWRT_DIR/.config"
-  append_extra_config
-  write_build_options_config
-
-  (
-    cd "$OPENWRT_DIR"
-    make defconfig
-  )
+if [[ "$BUILD_METHOD" == 'imagebuilder' ]]; then
+  run_imagebuilder_build
 else
-  apply_pinned_patches
+  run_source_build
 fi
-
-log "Resolving apk world package selections"
-world_config_resolve "$OPENWRT_DIR/tmp/.packageinfo" \
-  "$REPORT_DIR/reference.world" "$REPORT_DIR/builtin-package-names.txt" \
-  | sort -u >"$REPORT_DIR/world-config.tsv"
-world_config_missing "$REPORT_DIR/world-config.tsv" "$OPENWRT_DIR/.config" \
-  >"$REPORT_DIR/world-unselected-package-names.txt"
-if [[ "$BUILD_MODE" == 'full' && -s "$REPORT_DIR/world-unselected-package-names.txt" ]]; then
-  log "Selecting captured apk world packages in device config"
-  world_config_apply "$REPORT_DIR/world-config.tsv" "$OPENWRT_DIR/.config" \
-    >"$OPENWRT_DIR/.config.world"
-  mv "$OPENWRT_DIR/.config.world" "$OPENWRT_DIR/.config"
-  (
-    cd "$OPENWRT_DIR"
-    make defconfig
-  )
-  world_config_missing "$REPORT_DIR/world-config.tsv" "$OPENWRT_DIR/.config" \
-    >"$REPORT_DIR/world-unselected-package-names.txt"
-fi
-cp "$OPENWRT_DIR/.config" "$REPORT_DIR/final.config"
-if [[ -s "$REPORT_DIR/world-unselected-package-names.txt" ]]; then
-  cat "$REPORT_DIR/world-unselected-package-names.txt" >&2
-  die "apk world packages cannot be selected for this target; see $REPORT_DIR/world-unselected-package-names.txt"
-fi
-
-if [[ "$BUILD_MODE" == 'full' ]]; then
-  state_dir_tmp="$(mktemp -d "$WORK_ROOT/.openwrt-ft-state.XXXXXXXX")"
-  write_compatibility_manifest >"$state_dir_tmp/compatibility.tsv"
-  write_build_state >"$state_dir_tmp/prepared.tsv"
-  [[ ! -e "$STATE_DIR" ]] ||
-    die "workspace state unexpectedly appeared during the build: $STATE_DIR"
-  mv "$state_dir_tmp" "$STATE_DIR"
-fi
-
-configure_ccache_environment
-
-if [[ "$BUILD_MODE" != 'incremental' ]]; then
-  log "Downloading sources"
-  (
-    cd "$OPENWRT_DIR"
-    make DL_DIR="$DL_DIR" download -j"$DOWNLOAD_JOBS"
-  )
-fi
-
-if [[ "$BUILD_MODE" != 'full' ]]; then
-  for rebuild_selector in "${REBUILT_PACKAGES[@]}"; do
-    case "$rebuild_selector" in
-      mac80211)
-        rebuild_paths=('package/kernel/mac80211')
-        ;;
-      local-feeds)
-        rebuild_paths=("${LOCAL_FEED_PACKAGE_PATHS[@]}")
-        ;;
-      *)
-        die "internal error: unsupported incremental package: $rebuild_selector"
-        ;;
-    esac
-    for rebuild_path in "${rebuild_paths[@]}"; do
-      log "Cleaning incremental package: $rebuild_path"
-      (
-        cd "$OPENWRT_DIR"
-        make DL_DIR="$DL_DIR" "$rebuild_path/clean"
-      )
-      log "Compiling incremental package: $rebuild_path"
-      (
-        cd "$OPENWRT_DIR"
-        make DL_DIR="$DL_DIR" -j"$MAKE_JOBS" "$rebuild_path/compile"
-      )
-    done
-  done
-
-  ARTIFACT_DIR="$OPENWRT_DIR/bin/targets/$TARGET/$SUBTARGET"
-  if [[ -d "$ARTIFACT_DIR" ]]; then
-    mapfile -d '' -t stale_target_images < <(
-      find "$ARTIFACT_DIR" -maxdepth 1 -type f -name "*${DEVICE_ID}*" -print0
-    )
-    if ((${#stale_target_images[@]} > 0)); then
-      log "Removing ${#stale_target_images[@]} stale target artifact(s)"
-      rm -f -- "${stale_target_images[@]}"
-    fi
-  fi
-fi
-
-log "Building image"
-write_ccache_stats "before build"
-(
-  cd "$OPENWRT_DIR"
-  make DL_DIR="$DL_DIR" -j"$MAKE_JOBS"
-)
-write_ccache_stats "after build"
-cp "$OPENWRT_DIR/.config" "$REPORT_DIR/final.config"
-copy_openwrt_logs
-
-ARTIFACT_DIR="$OPENWRT_DIR/bin/targets/$TARGET/$SUBTARGET"
-SYSUPGRADE_IMAGE="$(find "$ARTIFACT_DIR" -maxdepth 1 -type f -name "*${DEVICE_ID}*sysupgrade.bin" | sort | head -n1)"
-INITRAMFS_IMAGE="$(find "$ARTIFACT_DIR" -maxdepth 1 -type f -name "*${DEVICE_ID}*initramfs-kernel.bin" | sort | head -n1)"
-BUILT_MANIFEST="$(find "$ARTIFACT_DIR" -maxdepth 1 -type f -name "*${DEVICE_ID}.manifest" | sort | head -n1)"
-
-[[ -n "$SYSUPGRADE_IMAGE" ]] || die "sysupgrade image not found in $ARTIFACT_DIR"
-[[ -n "$INITRAMFS_IMAGE" ]] || die "initramfs image not found in $ARTIFACT_DIR"
-[[ -n "$BUILT_MANIFEST" ]] || die "manifest not found in $ARTIFACT_DIR"
 
 cp "$SYSUPGRADE_IMAGE" "$OUTPUT_DIR/"
-cp "$INITRAMFS_IMAGE" "$OUTPUT_DIR/"
+if [[ -n "$INITRAMFS_IMAGE" ]]; then
+  cp "$INITRAMFS_IMAGE" "$OUTPUT_DIR/"
+fi
 cp "$BUILT_MANIFEST" "$OUTPUT_DIR/"
 
+output_images=("$(basename "$SYSUPGRADE_IMAGE")")
+if [[ -n "$INITRAMFS_IMAGE" ]]; then
+  output_images+=("$(basename "$INITRAMFS_IMAGE")")
+fi
 (
   cd "$OUTPUT_DIR"
-  sha256sum "$(basename "$SYSUPGRADE_IMAGE")" "$(basename "$INITRAMFS_IMAGE")" | tee sha256sums.txt
+  sha256sum "${output_images[@]}" | tee sha256sums.txt
 )
 
 parse_manifest "$REFERENCE_MANIFEST_ABS" | sort >"$REPORT_DIR/reference.tsv"
@@ -1230,6 +1924,18 @@ comm -23 "$REPORT_DIR/reference.names" "$REPORT_DIR/built.effective.names" >"$RE
 comm -13 "$REPORT_DIR/reference.effective.names" "$REPORT_DIR/built.names" >"$REPORT_DIR/extra-package-names.txt"
 join -t $'\t' "$REPORT_DIR/reference.tsv" "$REPORT_DIR/built.tsv" | awk -F '\t' '$2 != $3 { print $1 "\t" $2 "\t" $3 }' >"$REPORT_DIR/version-mismatches.tsv"
 
+image_kernel_version="$(awk -F '\t' '$1 == "kernel" { print $2; exit }' "$REPORT_DIR/built.tsv")"
+reference_kernel_version="$(awk -F '\t' '$1 == "kernel" { print $2; exit }' "$REPORT_DIR/reference.tsv")"
+if [[ "$BUILD_METHOD" == 'imagebuilder' ]]; then
+  # The ImageBuilder installs the official kernel, so official kmods match
+  # it. Its version replaces the router kernel line in the strict check.
+  [[ "$image_kernel_version" == "$IMAGEBUILDER_KERNEL_VERSION" ]] ||
+    die "image kernel ${image_kernel_version:-<missing>} is not the pinned ImageBuilder kernel $IMAGEBUILDER_KERNEL_VERSION"
+  awk -F '\t' -v kernel="$IMAGEBUILDER_KERNEL_VERSION" '!($1 == "kernel" && $3 == kernel)' \
+    "$REPORT_DIR/version-mismatches.tsv" >"$REPORT_DIR/version-mismatches.tsv.tmp"
+  mv "$REPORT_DIR/version-mismatches.tsv.tmp" "$REPORT_DIR/version-mismatches.tsv"
+fi
+
 sed 's/=.*$//' "$REPORT_DIR/reference.world" | sort -u >"$REPORT_DIR/world.names"
 comm -23 "$REPORT_DIR/world.names" "$REPORT_DIR/built.effective.names" >"$REPORT_DIR/world-missing-package-names.txt"
 
@@ -1240,11 +1946,18 @@ version_mismatches_count="$(count_lines "$REPORT_DIR/version-mismatches.tsv")"
 world_missing_package_names_count="$(count_lines "$REPORT_DIR/world-missing-package-names.txt")"
 
 cp "$LOCK_FILE" "$METADATA_DIR/$(basename "$LOCK_FILE")"
-cp "$CONFIG_FRAGMENT_ABS" "$METADATA_DIR/$(basename "$CONFIG_FRAGMENT_ABS")"
 copy_pinned_patch_metadata
 cp "$REFERENCE_MANIFEST_ABS" "$METADATA_DIR/reference.manifest"
 cp "$REPORT_DIR/reference.world" "$METADATA_DIR/reference.world"
-cp "$REPORT_DIR/final.config" "$METADATA_DIR/final.config"
+if [[ "$BUILD_METHOD" == 'imagebuilder' ]]; then
+  cp "$REPORT_DIR/sdk.config" "$METADATA_DIR/sdk.config"
+  cp "$REPORT_DIR/imagebuilder-packages.txt" "$METADATA_DIR/imagebuilder-packages.txt"
+  cp "$REPORT_DIR/imagebuilder-injected.tsv" "$METADATA_DIR/imagebuilder-injected.tsv"
+  write_imagebuilder_repositories >"$METADATA_DIR/imagebuilder-repositories.tsv"
+else
+  cp "$CONFIG_FRAGMENT_ABS" "$METADATA_DIR/$(basename "$CONFIG_FRAGMENT_ABS")"
+  cp "$REPORT_DIR/final.config" "$METADATA_DIR/final.config"
+fi
 cp "$REPORT_DIR/builtin-package-names.txt" "$METADATA_DIR/builtin-package-names.txt"
 cp "$REPORT_DIR/local-feed-digests.tsv" "$METADATA_DIR/local-feed-digests.tsv"
 cp "$REPORT_DIR/prebuilt-apks.tsv" "$METADATA_DIR/prebuilt-apks.tsv"
@@ -1254,7 +1967,12 @@ if [[ -f "$REPORT_DIR/ccache-stats.txt" ]]; then
 fi
 
 sysupgrade_sha="$(sha256sum "$SYSUPGRADE_IMAGE" | awk '{print $1}')"
-initramfs_sha="$(sha256sum "$INITRAMFS_IMAGE" | awk '{print $1}')"
+initramfs_name=''
+initramfs_sha=''
+if [[ -n "$INITRAMFS_IMAGE" ]]; then
+  initramfs_name="$(basename "$INITRAMFS_IMAGE")"
+  initramfs_sha="$(sha256sum "$INITRAMFS_IMAGE" | awk '{print $1}')"
+fi
 openwrt_logs_rel=''
 if [[ -d "$OPENWRT_LOG_OUTPUT_DIR" ]]; then
   openwrt_logs_rel='logs/openwrt'
@@ -1269,6 +1987,7 @@ cat >"$REPORT_DIR/build-summary.txt" <<EOF
 build_id=${BUILD_ID}
 build_root=${BUILD_ROOT}
 workspace_id=${WORKSPACE_ID}
+build_method=${BUILD_METHOD}
 build_mode=${BUILD_MODE}
 builder_id=${BUILDER_ID}
 rebuilt_packages=${rebuilt_packages_value}
@@ -1282,13 +2001,17 @@ telephony_ref=${FEED_TELEPHONY_REF}
 video_ref=${FEED_VIDEO_REF}
 patch_sha256=${PATCH_SHA256}
 patches_tsv=metadata/patches.tsv
+sdk_sha256=${SDK_SHA256:-}
+imagebuilder_sha256=${IMAGEBUILDER_SHA256:-}
 builder_platform=${BUILDER_PLATFORM:-unknown}
 build_log=logs/build.log
 openwrt_logs=${openwrt_logs_rel}
 sysupgrade_image=$(basename "$SYSUPGRADE_IMAGE")
 sysupgrade_sha256=${sysupgrade_sha}
-initramfs_image=$(basename "$INITRAMFS_IMAGE")
+initramfs_image=${initramfs_name}
 initramfs_sha256=${initramfs_sha}
+reference_kernel_version=${reference_kernel_version}
+image_kernel_version=${image_kernel_version}
 strict_manifest=${STRICT_MANIFEST_MODE}
 ccache=${USE_CCACHE_MODE}
 ccache_dir=${CCACHE_DIR:-}
@@ -1315,7 +2038,7 @@ if ((STRICT_MANIFEST_MODE)) && (
   die "built manifest differs from reference; see $REPORT_DIR and $REPORT_DIR/build-summary.txt"
 fi
 
-success_tmp="$(mktemp "$WORK_ROOT/.openwrt-ft-success.XXXXXXXX")"
+success_tmp="$(mktemp "$STATE_DIR/.last-success.XXXXXXXX")"
 write_build_state >"$success_tmp"
 cp "$COMPATIBILITY_FILE" "$METADATA_DIR/workspace-compatibility.tsv"
 cp "$success_tmp" "$METADATA_DIR/workspace-last-success.tsv"

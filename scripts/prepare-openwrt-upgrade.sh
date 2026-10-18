@@ -30,6 +30,8 @@ Options:
 
 The command prepares a patched repo-built upgrade image using ASU metadata for
 release discovery. It does not copy the image to the router or run sysupgrade.
+Locks with ImageBuilder pins are refreshed with scripts/pin-imagebuilder.sh
+after the release pins change.
 Prebuilt APKs are compiled against one OpenWrt SDK, so a release change
 normally needs a matching new usteer-apk-builder release first.
 EOF
@@ -481,6 +483,8 @@ SSH_TARGET="${POSITIONAL[0]}"
 LOCK_FILE="${POSITIONAL[1]}"
 BUILD_SCRIPT="${BUILD_SCRIPT:-$SCRIPT_DIR/run-ec2-build.sh}"
 [[ -n "$BUILD_SCRIPT" ]] || die "BUILD_SCRIPT must not be empty"
+PIN_IMAGEBUILDER_SCRIPT="${PIN_IMAGEBUILDER_SCRIPT:-$SCRIPT_DIR/pin-imagebuilder.sh}"
+[[ -n "$PIN_IMAGEBUILDER_SCRIPT" ]] || die "PIN_IMAGEBUILDER_SCRIPT must not be empty"
 if [[ "$DRY_RUN" != '1' ]]; then
   if [[ "$BUILD_SCRIPT" == */* ]]; then
     [[ -x "$BUILD_SCRIPT" ]] || die "BUILD_SCRIPT is not executable: $BUILD_SCRIPT"
@@ -638,8 +642,18 @@ if [[ "$LOCK_RELEASE" != "$TARGET_VERSION" ]]; then
   fi
 fi
 
+# Locks that pin the official SDK and ImageBuilder need those pins and the
+# repository index hashes refreshed for the new release.
+LOCK_HAS_IMAGEBUILDER_PINS='0'
+if [[ -n "$(lock_value "$LOCK_FILE_ABS" SDK_URL)" ]]; then
+  LOCK_HAS_IMAGEBUILDER_PINS='1'
+fi
+
 if [[ "$DRY_RUN" == '1' ]]; then
   print_lock_plan "$LOCK_FILE_ABS" "$OPENWRT_TAG_NEW" "$OPENWRT_REF_NEW" "$FEED_PACKAGES_REF_NEW" "$FEED_LUCI_REF_NEW" "$FEED_ROUTING_REF_NEW" "$FEED_TELEPHONY_REF_NEW" "$FEED_VIDEO_REF_NEW"
+  if [[ "$LOCK_HAS_IMAGEBUILDER_PINS" == '1' ]]; then
+    printf 'Would refresh ImageBuilder pins with %s\n' "$PIN_IMAGEBUILDER_SCRIPT"
+  fi
   printf 'Would refresh %s and %s from %s\n' "$REFERENCE_MANIFEST" "$WORLD_SOURCE" "$SSH_TARGET"
 else
   log "Capturing package baseline from $SSH_TARGET"
@@ -660,6 +674,11 @@ else
     "$FEED_ROUTING_REF_NEW" \
     "$FEED_TELEPHONY_REF_NEW" \
     "$FEED_VIDEO_REF_NEW"
+  if [[ "$LOCK_HAS_IMAGEBUILDER_PINS" == '1' ]]; then
+    log "Refreshing ImageBuilder pins"
+    "$PIN_IMAGEBUILDER_SCRIPT" "$LOCK_FILE_ABS" ||
+      die "$LOCK_FILE_REL has new release pins but stale ImageBuilder pins; rerun $PIN_IMAGEBUILDER_SCRIPT $LOCK_FILE_REL"
+  fi
 fi
 
 if [[ "$ROUTER_RELEASE" == "$TARGET_VERSION" ]]; then
