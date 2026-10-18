@@ -1098,6 +1098,20 @@ assemble_imagebuilder_packages() {
   fi
 }
 
+# Prebuilt APKs may provide packages that the release metadata does not list;
+# apk installs them from the local package directory.
+imagebuilder_world_metadata() {
+  local entry name file url sha256
+
+  cat -- "$IB_DIR/.packageinfo"
+  if declare -p PREBUILT_APKS >/dev/null 2>&1; then
+    for entry in "${PREBUILT_APKS[@]}"; do
+      prebuilt_apk_parse_entry "$entry" name file url sha256 || die 'invalid PREBUILT_APKS entry'
+      printf '\nPackage: %s\n' "$name"
+    done
+  fi
+}
+
 build_imagebuilder_image() {
   local info="$REPORT_DIR/imagebuilder-info.txt"
   local packages
@@ -1110,7 +1124,8 @@ build_imagebuilder_image() {
     die "ImageBuilder has no profile for $DEVICE_ID"
 
   log "Resolving apk world package selections"
-  world_config_resolve "$IB_DIR/.packageinfo" \
+  imagebuilder_world_metadata >"$REPORT_DIR/imagebuilder-packageinfo"
+  world_config_resolve "$REPORT_DIR/imagebuilder-packageinfo" \
     "$REPORT_DIR/reference.world" "$REPORT_DIR/builtin-package-names.txt" \
     | sort -u >"$REPORT_DIR/world-config.tsv"
   # The captured world replaces the default package selection, so drop
@@ -1131,6 +1146,21 @@ build_imagebuilder_image() {
   )
 }
 
+# Compare one extracted package entry with the image root: regular files by
+# content, symlinks by target. Other entry types are not expected in a package.
+injected_entry_matches() {
+  local extracted="$1"
+  local installed="$2"
+
+  if [[ -L "$extracted" ]]; then
+    [[ -L "$installed" && "$(readlink -- "$extracted")" == "$(readlink -- "$installed")" ]]
+  elif [[ -f "$extracted" ]]; then
+    [[ -f "$installed" && ! -L "$installed" ]] && cmp -s -- "$extracted" "$installed"
+  else
+    return 1
+  fi
+}
+
 # Each injected package must be what landed in the image; apk could
 # otherwise satisfy a name with the equally versioned official package.
 verify_injected_packages() {
@@ -1149,12 +1179,12 @@ verify_injected_packages() {
     count=0
     while IFS= read -r -d '' path; do
       path="${path#./}"
-      if ! cmp -s -- "$extract_dir/$path" "$rootfs/$path"; then
+      if ! injected_entry_matches "$extract_dir/$path" "$rootfs/$path"; then
         rm -rf -- "$extract_dir"
         die "image does not contain the injected $kind package file for $name: /$path"
       fi
       count=$((count + 1))
-    done < <(cd "$extract_dir" && find . -type f -print0)
+    done < <(cd "$extract_dir" && find . ! -type d -print0)
     rm -rf -- "$extract_dir"
     ((count > 0)) || die "injected package has no files to verify: $name"
     printf '%s\t%s\t%s\n' "$name" "$sha256" "$count" >>"$REPORT_DIR/imagebuilder-injected-files.tsv"

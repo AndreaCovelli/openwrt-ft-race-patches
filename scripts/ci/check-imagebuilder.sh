@@ -134,16 +134,22 @@ feed_ref() {
 }
 
 # Fake apk packages are plain tar archives; the fake ImageBuilder apk tool
-# extracts them with tar.
+# extracts them with tar. Optional trailing arguments add a symlink.
 make_apk() {
   local dest="$1"
   local path="$2"
   local content="$3"
+  local link_path="${4:-}"
+  local link_target="${5:-}"
   local dir
 
   dir="$(mktemp -d "$tmp_root/apk.XXXXXXXX")"
   mkdir -p "$dir/$(dirname -- "$path")"
   printf '%s\n' "$content" >"$dir/$path"
+  if [[ -n "$link_path" ]]; then
+    mkdir -p "$dir/$(dirname -- "$link_path")"
+    ln -s "$link_target" "$dir/$link_path"
+  fi
   tar -cf "$dest" -C "$dir" .
   rm -rf "$dir"
 }
@@ -206,7 +212,8 @@ MAKEFILE
 ib_tree="$archive_root/openwrt-imagebuilder-test"
 mkdir -p "$ib_tree/packages" "$ib_tree/remote" "$ib_tree/staging_dir/host/bin"
 cp "$tmp_root/info.txt" "$ib_tree/info.txt"
-cp "$tmp_root/packageinfo" "$ib_tree/.packageinfo"
+# The release metadata does not list the prebuilt-only fakesteer package.
+grep -vx 'Package: fakesteer' "$tmp_root/packageinfo" >"$ib_tree/.packageinfo"
 {
   printf 'CONFIG_TARGET_test=y\nCONFIG_SIGNATURE_CHECK=y\n'
   printf '# CONFIG_PACKAGE_MAC80211_TRACING is not set\nCONFIG_PACKAGE_MAC80211_MESH=y\n'
@@ -300,6 +307,9 @@ for package in kernel $packages; do
   fi
   printf '%s - %s\n' "$package" "$version" >>"$manifest"
 done
+if [[ "${FAKE_IB_BREAK_SYMLINK:-0}" == '1' ]]; then
+  ln -sfn ../sbin/other "$root/usr/bin/fakesteer"
+fi
 printf 'sysupgrade\n' >"$bin_dir/openwrt-test-sub-$profile-squashfs-sysupgrade.bin"
 IMAGE
 chmod +x "$ib_tree/fake-image.sh"
@@ -356,7 +366,8 @@ tar --zstd -cf "$cache_root/dl/$ib_archive" -C "$archive_root" openwrt-imagebuil
 sdk_sha="$(sha256_of "$cache_root/dl/$sdk_archive")"
 ib_sha="$(sha256_of "$cache_root/dl/$ib_archive")"
 
-make_apk "$cache_root/dl/fakesteer-2.0-r1.apk" usr/sbin/fakesteer 'patched fakesteer'
+make_apk "$cache_root/dl/fakesteer-2.0-r1.apk" usr/sbin/fakesteer 'patched fakesteer' \
+  usr/bin/fakesteer ../sbin/fakesteer
 fakesteer_sha="$(sha256_of "$cache_root/dl/fakesteer-2.0-r1.apk")"
 
 printf 'CONFIG_TARGET_TEST=y\n' >"$input_root/diffconfig"
@@ -489,6 +500,8 @@ cmp -s "$input_root/mac80211.patch" "$ib_rootfs/lib/modules/fake/mac80211.ko" ||
   die 'image does not contain the SDK-built mac80211 package'
 [[ "$(cat "$ib_rootfs/usr/sbin/fakesteer")" == 'patched fakesteer' ]] ||
   die 'image does not contain the prebuilt APK'
+assert_file_line "$workspace/reports/imagebuilder-injected-files.tsv" \
+  "$(printf 'fakesteer\t%s\t2' "$fakesteer_sha")" 'injected file check did not cover the prebuilt APK symlink'
 packages_file="$workspace/output/metadata/imagebuilder-packages.txt"
 [[ "$(cat "$packages_file")" == $'base\nfakesteer\nhtop\nkmod-mac80211\n-dropbear-fake\n-kmod-fake-usb' ]] ||
   die "unexpected ImageBuilder package selection: $(paste -sd ' ' "$packages_file")"
@@ -548,6 +561,8 @@ expect_failure() {
 
 FAKE_IB_PREFER_REMOTE=1 expect_failure official-package 'image does not contain the injected sdk package file for kmod-mac80211' \
   run_build official-package --workspace "$workspace_id" "$lock_file"
+FAKE_IB_BREAK_SYMLINK=1 expect_failure broken-symlink 'image does not contain the injected prebuilt package file for fakesteer: /usr/bin/fakesteer' \
+  run_build broken-symlink --workspace "$workspace_id" "$lock_file"
 FAKE_IB_MUTATE_INDEX=1 expect_failure index-mutation 'pinned repository index changed during the image build' \
   run_build index-mutation --workspace "$workspace_id" "$lock_file"
 FAKE_IB_KERNEL=9.9.9-r1 expect_failure kernel-mismatch 'image kernel 9.9.9-r1 is not the pinned ImageBuilder kernel 6.12.94~abc-r1' \

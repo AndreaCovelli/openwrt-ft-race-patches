@@ -113,8 +113,10 @@ Build methods:
 - The SDK packages its prebuilt kernel modules before compiling mac80211 so
   OpenWrt's package dependency check passes; only the patched packages reach
   the image. After the image build, every file of each injected package must
-  be byte-identical in the image root, so apk cannot silently pick the equally
-  versioned official package.
+  be byte-identical in the image root, and every symlink must have the same
+  target, so apk cannot silently pick the equally versioned official package.
+  `PREBUILT_APKS` names count as available world packages even when the
+  release metadata does not list them.
 - The image kernel must equal the ImageBuilder's kernel package. The
   reference manifest's `kernel` line is recorded as
   `reference_kernel_version` and is not counted as a version mismatch;
