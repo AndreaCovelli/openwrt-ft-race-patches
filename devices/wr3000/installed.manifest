@@ -116,7 +116,6 @@ luci-mod-status - 26.180.75667~ec518ef
 luci-mod-system - 26.075.78940~13c96bf
 luci-proto-ipv6 - 25.247.44965~183ab68
 luci-proto-ppp - 25.315.67830~fb3b96e
-luci-proto-relay - 26.052.56299~bb94268
 luci-ssl - 26.051.07599~e08a56d
 luci-theme-bootstrap - 26.061.65855~27a9c0c
 mt7981-wo-firmware - 20260221-r1
@@ -133,7 +132,6 @@ procd - 2026.03.13~58eb263d-r1
 procd-seccomp - 2026.03.13~58eb263d-r1
 procd-ujail - 2026.03.13~58eb263d-r1
 px5g-mbedtls - 11
-relayd - 2025.10.04~708a76fa-r1
 rpcd - 2026.06.04~28faf640-r1
 rpcd-mod-file - 2026.06.04~28faf640-r1
 rpcd-mod-iwinfo - 2026.06.04~28faf640-r1
