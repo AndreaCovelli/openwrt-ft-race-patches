@@ -5,7 +5,7 @@ on:
     branches:
       - main
     paths: &ci_paths
-      - .github/dependabot.yml
+      - renovate.json
       - .github/workflows/**
       - .dockerignore
       - .hadolint.yaml
