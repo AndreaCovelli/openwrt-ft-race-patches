@@ -1,0 +1,15 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["github>AndreaCovelli/renovate-config"],
+  "description": "Locks, patches, ImageBuilder pins, and the dated Docker base and builder images are managed manually: the base image must stay synchronized with UBUNTU_SNAPSHOT in docker/Dockerfile.ec2",
+  "enabledManagers": ["github-actions", "mise"],
+  "packageRules": [
+    {
+      "description": "Keep the established ci: prefix for workflow and validation tool updates",
+      "matchManagers": ["github-actions", "mise"],
+      "semanticCommits": "enabled",
+      "semanticCommitType": "ci",
+      "semanticCommitScope": null
+    }
+  ]
+}
