@@ -177,25 +177,27 @@ APK
 chmod +x "$sdk_tree/scripts/feeds" "$sdk_tree/staging_dir/host/bin/apk"
 cat >"$sdk_tree/Makefile" <<MAKEFILE
 PKG_DIR := bin/targets/test/sub/packages
-SRC_DIR := build_dir/target-test/linux-test_sub/backports-6.18.1
+SRC_DIR := build_dir/target-test/linux-test_sub/mac80211-regular/backports-6.18.1
+VARIANT_DIR := build_dir/target-test/linux-test_sub/mac80211-smallbuffers/backports-6.18.1
 
 .PHONY: defconfig package/linux/compile package/mac80211/compile
 
 defconfig:
-	@printf 'CONFIG_PACKAGE_kmod-mac80211=m\n' >.config
+	@{ printf 'CONFIG_PACKAGE_kmod-mac80211=m\n'; grep -Fx '# CONFIG_AUTOREMOVE is not set' .config 2>/dev/null || printf 'CONFIG_AUTOREMOVE=y\n'; } >.config.new
+	@mv .config.new .config
 
 package/linux/compile:
 	@printf 'linux-compile NO_DEPS=%s\n' '\$(NO_DEPS)' >>make-calls.log
 
 package/mac80211/compile:
 	@printf 'mac80211-compile NO_DEPS=%s\n' '\$(NO_DEPS)' >>make-calls.log
-	@rm -rf \$(SRC_DIR) pkg-root
-	@mkdir -p \$(SRC_DIR) pkg-root/lib/modules/6.12.1 \$(PKG_DIR)
-	@cp -a feeds/base/kernel/mac80211/src/. \$(SRC_DIR)/
-	@for p in feeds/base/kernel/mac80211/patches/subsys/*.patch; do patch -s -p1 -d \$(SRC_DIR) <"\$\$p"; done
+	@rm -rf \$(SRC_DIR) \$(VARIANT_DIR) pkg-root
+	@mkdir -p \$(SRC_DIR) \$(VARIANT_DIR) pkg-root/lib/modules/6.12.1 \$(PKG_DIR)
+	@for d in \$(SRC_DIR) \$(VARIANT_DIR); do cp -a feeds/base/kernel/mac80211/src/. \$\$d/; for p in feeds/base/kernel/mac80211/patches/subsys/*.patch; do patch -s -p1 -d \$\$d <"\$\$p"; done; done
 	@$cc_bin -c -o pkg-root/lib/modules/6.12.1/mac80211.ko \$(SRC_DIR)/net/mac80211/key.c
 	@tar -cf \$(PKG_DIR)/$package_file -C pkg-root .
 	@printf 'hwsim\n' >\$(PKG_DIR)/kmod-mac80211-hwsim-6.12.1.6.18.1-r1.apk
+	@if grep -Fqx 'CONFIG_AUTOREMOVE=y' .config; then rm -rf \$(SRC_DIR)/* \$(VARIANT_DIR)/*; fi
 MAKEFILE
 mkdir -p "$target_dir/$kmods_rel"
 tar --zstd -cf "$target_dir/$sdk_file" -C "$tmp_root/sdk-tree" openwrt-sdk
@@ -277,6 +279,8 @@ grep -Fq 'Comparing the patched package with the official package' "$artifact/lo
 [[ "$(cat "$workspace/sdk/feeds.conf")" == "src-git --root=package base https://git.example.test/openwrt.git^$openwrt_ref" ]] ||
   die 'SDK feeds.conf does not contain only the pinned base feed'
 grep -Fqx 'mac80211-compile NO_DEPS=1' "$workspace/sdk/make-calls.log" || die 'mac80211 was not compiled without dependencies'
+grep -Fqx '# CONFIG_AUTOREMOVE is not set' "$artifact/metadata/sdk.config" ||
+  die 'SDK config does not disable AUTOREMOVE'
 [[ "$(paste -sd ' ' "$workspace/sdk/make-calls.log")" == 'linux-compile NO_DEPS=1 mac80211-compile NO_DEPS=1' ]] ||
   die 'SDK kernel modules were not packaged before mac80211'
 ! cmp -s "$artifact/mac80211.ko" "$official_root/lib/modules/6.12.1/mac80211.ko" ||

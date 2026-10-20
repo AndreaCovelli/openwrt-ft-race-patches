@@ -151,9 +151,11 @@ Patched kmod-mac80211 for a stock release:
   SDK's base feed is checked out at the OpenWrt commit the SDK records, the
   patch is added to the mac80211 package, and the SDK compiles mac80211 with
   the release package configuration.
-- The build fails unless the patch is present in the prepared mac80211 source
-  tree and the patched package matches the official one: the same file name
-  and version, the same file list, the same module metadata (`vermagic`,
+- The build turns off the SDK's `CONFIG_AUTOREMOVE`, so mac80211 source trees
+  remain after compiling, and fails unless the patch is present in every
+  prepared mac80211 source tree (one per build variant, such as ath10k
+  `smallbuffers`) and the patched package matches the official one: the same
+  file name and version, the same file list, the same module metadata (`vermagic`,
   `depends`, `name`, and the other `.modinfo` entries except `srcversion`),
   and the same exported symbols. At least one module must differ from the
   official build. Symbols the patched modules import but the official modules

@@ -282,12 +282,19 @@ done
 # The SDK's Config-build.in carries the release package selection, so
 # defconfig builds mac80211 with the release package options.
 log "Writing SDK config"
+# The SDK enables AUTOREMOVE, which deletes a package's source tree after
+# compiling it. Keep the tree so the patch check below can inspect it.
 (
   cd "$SDK_DIR"
+  make defconfig
+  sed -i 's/^CONFIG_AUTOREMOVE=y$/# CONFIG_AUTOREMOVE is not set/' .config
   make defconfig
 )
 grep -Eqx "CONFIG_PACKAGE_$PACKAGE=[my]" "$SDK_DIR/.config" ||
   die "SDK config does not select $PACKAGE"
+if grep -Fqx 'CONFIG_AUTOREMOVE=y' "$SDK_DIR/.config"; then
+  die "SDK config still enables AUTOREMOVE"
+fi
 cp -- "$SDK_DIR/.config" "$OUTPUT_DIR/metadata/sdk.config"
 
 make_args=(NO_DEPS=1 DL_DIR="$DL_DIR" CONFIG_BUILD_LOG=y)
@@ -304,13 +311,19 @@ log "Compiling mac80211"
   make -j"$MAKE_JOBS" "${make_args[@]}" package/mac80211/compile
 )
 
-# A patch that applies reverses cleanly in the prepared source tree.
-mapfile -t backports_dirs < <(find "$SDK_DIR/build_dir" -mindepth 3 -maxdepth 3 -type d -name 'backports-*')
-((${#backports_dirs[@]} == 1)) ||
-  die "expected one mac80211 build directory, found ${#backports_dirs[@]}"
-for patch_file in "${PATCH_FILES[@]}"; do
-  patch -R --dry-run -f -s -p1 -d "${backports_dirs[0]}" <"$patch_file" >/dev/null ||
-    die "mac80211 build directory does not contain $(basename -- "$patch_file")"
+# A patch that applies reverses cleanly in the prepared source tree. When the
+# release selects a mac80211 build variant, such as ath10k smallbuffers, each
+# variant has its own tree under mac80211-<variant>/.
+mapfile -t backports_dirs < <(
+  find "$SDK_DIR/build_dir" -mindepth 3 -maxdepth 4 -type d -name 'backports-*' \
+    \( -path '*/linux-*/backports-*' -o -path '*/linux-*/mac80211-*/backports-*' \) | sort
+)
+((${#backports_dirs[@]} > 0)) || die "found no mac80211 build directory"
+for backports_dir in "${backports_dirs[@]}"; do
+  for patch_file in "${PATCH_FILES[@]}"; do
+    patch -R --dry-run -f -s -p1 -d "$backports_dir" <"$patch_file" >/dev/null ||
+      die "mac80211 build directory ${backports_dir#"$SDK_DIR/"} does not contain $(basename -- "$patch_file")"
+  done
 done
 
 PATCHED_APK="$(imagebuilder_find_package_apk "$SDK_DIR/bin/targets/$TARGET/$SUBTARGET/packages" "$PACKAGE")" ||
