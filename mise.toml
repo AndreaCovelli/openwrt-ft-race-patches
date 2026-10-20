@@ -30,6 +30,7 @@ scripts/ci/check-prebuilt-apks.sh
 scripts/ci/check-run-local-docker-build.sh
 scripts/ci/check-incremental-build.sh
 scripts/ci/check-imagebuilder.sh
+scripts/ci/check-build-kmod.sh
 scripts/ci/check-pin-imagebuilder.sh
 scripts/ci/check-world-config.sh
 scripts/ci/check-ec2-cleanup.sh

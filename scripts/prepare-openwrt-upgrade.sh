@@ -34,6 +34,8 @@ Locks with ImageBuilder pins are refreshed with scripts/pin-imagebuilder.sh
 after the release pins change.
 Prebuilt APKs are compiled against one OpenWrt SDK, so a release change
 normally needs a matching new usteer-apk-builder release first.
+A release change also switches PATCH_SOURCE to the mac80211 patch refreshed
+for the selected release in patches/<release>/subsys; that patch must exist.
 EOF
 }
 
@@ -136,7 +138,9 @@ rewrite_upgrade_lock() {
     -v luci_ref="$4" \
     -v routing_ref="$5" \
     -v telephony_ref="$6" \
-    -v video_ref="$7" '
+    -v video_ref="$7" \
+    -v patch_source="$8" \
+    -v patch_sha256="$9" '
     function replacement(name) {
       if (name == "OPENWRT_TAG") return openwrt_tag
       if (name == "OPENWRT_REF") return openwrt_ref
@@ -145,6 +149,8 @@ rewrite_upgrade_lock() {
       if (name == "FEED_ROUTING_REF") return routing_ref
       if (name == "FEED_TELEPHONY_REF") return telephony_ref
       if (name == "FEED_VIDEO_REF") return video_ref
+      if (name == "PATCH_SOURCE") return patch_source
+      if (name == "PATCH_SHA256") return patch_sha256
       return ""
     }
     function update(name) {
@@ -161,7 +167,9 @@ rewrite_upgrade_lock() {
     update("FEED_LUCI_REF") ||
     update("FEED_ROUTING_REF") ||
     update("FEED_TELEPHONY_REF") ||
-    update("FEED_VIDEO_REF") {
+    update("FEED_VIDEO_REF") ||
+    update("PATCH_SOURCE") ||
+    update("PATCH_SHA256") {
       next
     }
     { print }
@@ -173,7 +181,9 @@ rewrite_upgrade_lock() {
       required[5] = "FEED_ROUTING_REF"
       required[6] = "FEED_TELEPHONY_REF"
       required[7] = "FEED_VIDEO_REF"
-      for (i = 1; i <= 7; i++) {
+      required[8] = "PATCH_SOURCE"
+      required[9] = "PATCH_SHA256"
+      for (i = 1; i <= 9; i++) {
         if (!found[required[i]]) {
           print "missing lock assignment " required[i] > "/dev/stderr"
           exit 2
@@ -409,6 +419,8 @@ print_lock_plan() {
   local routing_ref="$6"
   local telephony_ref="$7"
   local video_ref="$8"
+  local patch_source="$9"
+  local patch_sha256="${10}"
 
   printf 'Would update %s:\n' "$lock_file"
   printf "  OPENWRT_TAG: '%s' -> '%s'\n" "$(lock_value "$lock_file" OPENWRT_TAG)" "$openwrt_tag"
@@ -418,6 +430,8 @@ print_lock_plan() {
   printf "  FEED_ROUTING_REF: '%s' -> '%s'\n" "$(lock_value "$lock_file" FEED_ROUTING_REF)" "$routing_ref"
   printf "  FEED_TELEPHONY_REF: '%s' -> '%s'\n" "$(lock_value "$lock_file" FEED_TELEPHONY_REF)" "$telephony_ref"
   printf "  FEED_VIDEO_REF: '%s' -> '%s'\n" "$(lock_value "$lock_file" FEED_VIDEO_REF)" "$video_ref"
+  printf "  PATCH_SOURCE: '%s' -> '%s'\n" "$(lock_value "$lock_file" PATCH_SOURCE)" "$patch_source"
+  printf "  PATCH_SHA256: '%s' -> '%s'\n" "$(lock_value "$lock_file" PATCH_SHA256)" "$patch_sha256"
 }
 
 TARGET_VERSION=''
@@ -494,7 +508,7 @@ if [[ "$DRY_RUN" != '1' ]]; then
 fi
 
 cd "$REPO_ROOT"
-require_cmd awk cat cmp curl date git jq mktemp mv realpath rm sed sort ssh tail timeout
+require_cmd awk cat cmp curl date git jq mktemp mv realpath rm sed sha256sum sort ssh tail timeout
 
 if [[ -n "$ASU_SERVER" ]]; then
   ASU_SERVER="$(trim_trailing_slash "$ASU_SERVER")"
@@ -642,6 +656,31 @@ if [[ "$LOCK_RELEASE" != "$TARGET_VERSION" ]]; then
   fi
 fi
 
+# The mac80211 patch is refreshed per release in patches/<release>/subsys, so
+# a release change switches the lock to the selected release's patch.
+PATCH_SOURCE_NEW="$(lock_value "$LOCK_FILE_ABS" PATCH_SOURCE)"
+PATCH_SHA256_NEW="$(lock_value "$LOCK_FILE_ABS" PATCH_SHA256)"
+[[ -n "$PATCH_SOURCE_NEW" && -n "$PATCH_SHA256_NEW" ]] ||
+  die "$LOCK_FILE_REL: missing PATCH_SOURCE or PATCH_SHA256"
+if [[ "$LOCK_RELEASE" != "$TARGET_VERSION" ]]; then
+  patch_problem=''
+  if [[ "$PATCH_SOURCE_NEW" =~ ^(.*/)?${LOCK_RELEASE//./[.]}/subsys/([^/]+[.]patch)$ ]]; then
+    PATCH_SOURCE_NEW="${BASH_REMATCH[1]}$TARGET_VERSION/subsys/${BASH_REMATCH[2]}"
+    if [[ -f "$(abs_repo_path "$PATCH_SOURCE_NEW")" ]]; then
+      patch_file="$(repo_existing_path "$PATCH_SOURCE_NEW" "$LOCK_FILE_REL: mac80211 patch")"
+      PATCH_SHA256_NEW="$(sha256sum "$patch_file" | awk '{ print $1 }')"
+    else
+      patch_problem="$PATCH_SOURCE_NEW does not exist; refresh the mac80211 patch for $TARGET_VERSION first"
+    fi
+  else
+    patch_problem="PATCH_SOURCE is not in a $LOCK_RELEASE/subsys patch directory: $PATCH_SOURCE_NEW"
+  fi
+  if [[ -n "$patch_problem" ]]; then
+    [[ "$DRY_RUN" == '1' ]] || die "$LOCK_FILE_REL: $patch_problem"
+    printf 'Warning: %s\n' "$patch_problem" >&2
+  fi
+fi
+
 # Locks that pin the official SDK and ImageBuilder need those pins and the
 # repository index hashes refreshed for the new release.
 LOCK_HAS_IMAGEBUILDER_PINS='0'
@@ -650,7 +689,7 @@ if [[ -n "$(lock_value "$LOCK_FILE_ABS" SDK_URL)" ]]; then
 fi
 
 if [[ "$DRY_RUN" == '1' ]]; then
-  print_lock_plan "$LOCK_FILE_ABS" "$OPENWRT_TAG_NEW" "$OPENWRT_REF_NEW" "$FEED_PACKAGES_REF_NEW" "$FEED_LUCI_REF_NEW" "$FEED_ROUTING_REF_NEW" "$FEED_TELEPHONY_REF_NEW" "$FEED_VIDEO_REF_NEW"
+  print_lock_plan "$LOCK_FILE_ABS" "$OPENWRT_TAG_NEW" "$OPENWRT_REF_NEW" "$FEED_PACKAGES_REF_NEW" "$FEED_LUCI_REF_NEW" "$FEED_ROUTING_REF_NEW" "$FEED_TELEPHONY_REF_NEW" "$FEED_VIDEO_REF_NEW" "$PATCH_SOURCE_NEW" "$PATCH_SHA256_NEW"
   if [[ "$LOCK_HAS_IMAGEBUILDER_PINS" == '1' ]]; then
     printf 'Would refresh ImageBuilder pins with %s\n' "$PIN_IMAGEBUILDER_SCRIPT"
   fi
@@ -673,7 +712,9 @@ else
     "$FEED_LUCI_REF_NEW" \
     "$FEED_ROUTING_REF_NEW" \
     "$FEED_TELEPHONY_REF_NEW" \
-    "$FEED_VIDEO_REF_NEW"
+    "$FEED_VIDEO_REF_NEW" \
+    "$PATCH_SOURCE_NEW" \
+    "$PATCH_SHA256_NEW"
   if [[ "$LOCK_HAS_IMAGEBUILDER_PINS" == '1' ]]; then
     log "Refreshing ImageBuilder pins"
     "$PIN_IMAGEBUILDER_SCRIPT" "$LOCK_FILE_ABS" ||

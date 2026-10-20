@@ -103,7 +103,8 @@ This command:
   `/etc/apk/world`, and the installed apk database from the router;
 - validates the target and profile against ASU metadata;
 - updates only the selected stable lock file to exact OpenWrt and release feed
-  commits;
+  commits, and switches its `PATCH_SOURCE` and `PATCH_SHA256` to the mac80211
+  patch in `patches/<release>/subsys/`;
 - refreshes that device's package baseline;
 - refreshes the lock's SDK, ImageBuilder, and repository index pins with
   `scripts/pin-imagebuilder.sh`, and stops if that fails;
@@ -124,6 +125,12 @@ file. Publish a matching `usteer-apk-builder` release, update the lock and the
 local feed `PKG_SOURCE` and `PKG_HASH`, then rerun. A dry run reports the
 mismatch as a warning, and `--allow-prebuilt-apk-mismatch` deliberately keeps
 the old APK.
+
+The mac80211 patch is refreshed separately for each release. Before preparing
+a new release, add its refreshed patch under `patches/<release>/subsys/` as
+described in "Refreshing pinned patches" in the README. When the selected
+release has no such patch, the script stops before changing any file; a dry
+run reports it as a warning.
 
 The stable locks build with the official SDK and ImageBuilder by default (see
 "Build methods" in the README). The ImageBuilder installs the captured world

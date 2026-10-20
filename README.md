@@ -1,7 +1,9 @@
 Patch bundle for the OpenWrt `hostapd: nl80211: kernel reports: key addition failed` FT race.
 
-It contains `patches/subsys/400-mac80211-defer-ap-side-ft-key-upload.patch`,
-installed into `package/kernel/mac80211/patches/subsys/`.
+It contains `400-mac80211-defer-ap-side-ft-key-upload.patch`, refreshed for
+each supported OpenWrt release under `patches/<release>/subsys/` (for example
+`patches/25.12.5/subsys/`) and installed into
+`package/kernel/mac80211/patches/subsys/`.
 
 This repo also contains a generic reproducible OpenWrt builder plus example
 device inputs.
@@ -23,6 +25,8 @@ Build entrypoints:
 - full EC2 lifecycle wrapper: `./scripts/run-ec2-build.sh locks/<device>.lock`
 - router image upgrade helper:
   `./scripts/upgrade-router-image.sh --no-flash wr3000e ./openwrt-artifacts/<build>/<image-sysupgrade.bin>`
+- patched `kmod-mac80211` for a stock release, without an image:
+  `./scripts/build-kmod.sh 25.12.6 mediatek/filogic`
 
 Development checks:
 - Install the checksum-locked tools with `mise install`.
@@ -139,6 +143,53 @@ Build methods:
   apk's package downloads under `cache/imagebuilder/apk-cache/`, shared by
   builds with the same index pins.
 
+Patched kmod-mac80211 for a stock release:
+- `scripts/build-kmod.sh <openwrt-version> <target>/<subtarget>` builds only
+  the patched `kmod-mac80211` package for an official release. It needs no
+  lock file, device inputs, Docker, or private release assets, so it works for
+  any release and target that publishes an SDK.
+- It reads the release `sha256sums` and `profiles.json`, then downloads and
+  verifies the release SDK and the official `kmod-mac80211` package against
+  them. Pass `--sdk-sha256 <hex>` to also require a known SDK checksum. The
+  SDK's base feed is checked out at the OpenWrt commit the SDK records, the
+  patch is added to the mac80211 package, and the SDK compiles mac80211 with
+  the release package configuration.
+- The build fails unless the patch is present in the prepared mac80211 source
+  tree and the patched package matches the official one: the same file name
+  and version, the same file list, the same module metadata (`vermagic`,
+  `depends`, `name`, and the other `.modinfo` entries except `srcversion`),
+  and the same exported symbols. At least one module must differ from the
+  official build. Symbols the patched modules import but the official modules
+  do not are listed in `metadata/new-imports.txt` and counted as
+  `new_imports` in `build-summary.txt`.
+- By default the build applies every patch in `patches/<version>/subsys/`,
+  the patches refreshed for that release, and stops if the release has none.
+  Pass repeatable `--patch <file>` to use others. The build stops if a patch
+  does not apply to the release's backports version; refresh it for that
+  release first.
+- Artifacts go to a new
+  `openwrt-artifacts/openwrt-ft-kmod-mac80211-<version>-<target>-<subtarget>-<utc>/`
+  directory (or `--artifact-dir <new-dir>`): the patched package with its
+  official file name, the extracted `mac80211.ko`, `sha256sums.txt`,
+  `build-summary.txt`, the patches, the SDK `.config`, the release metadata,
+  and `logs/build.log`. The workspace is
+  `build/openwrt-ft-kmod-<version>-<target>-<subtarget>`; rerun with
+  `--fresh` to replace it. The SDK archive is cached in `cache/dl`.
+- The host needs the usual OpenWrt SDK build prerequisites plus `curl`, `jq`,
+  `zstd`, and `readelf`. `docker/Dockerfile.ec2` installs all of them except
+  `jq`.
+- The module only loads on a router running exactly that release and target.
+  Confirm that `DISTRIB_RELEASE` and `DISTRIB_TARGET` in
+  `/etc/openwrt_release` match `openwrt_version` and `target` in
+  `build-summary.txt`, and that the router has the file named by
+  `module_path`. To use the module, keep a copy of the router's
+  `module_path` file, replace it with the artifact's `mac80211.ko`, and
+  reboot. Copy the saved module back to revert.
+- The package is not signed with the release key, and its name and version
+  are the same as the official package. Any `apk` reinstall or upgrade of
+  `kmod-mac80211`, a sysupgrade, or an attended sysupgrade image brings back
+  the official module.
+
 ASU-like latest release preparation:
 - `scripts/prepare-openwrt-upgrade.sh` follows the attended-sysupgrade style of
   selecting the latest available release for the router's current stable branch
@@ -174,6 +225,14 @@ ASU-like latest release preparation:
   `scripts/upgrade-router-image.sh` as described below.
 
 Refreshing pinned patches:
+- Each OpenWrt release can ship a different backports version, so the stable
+  patch is kept per release in `patches/<release>/subsys/`. To support a new
+  release, copy the previous release's patch to
+  `patches/<new-release>/subsys/` with the same file name and refresh the copy
+  in a checkout of the new release. Leave the earlier release's directory
+  unchanged for its locks and module builds. `scripts/ci/check-locks.sh`
+  requires a tagged lock's patches in `patches/<OPENWRT_TAG without v>/subsys/`
+  and the untagged `main` lock's in `patches/main/subsys/`.
 - Run the package-specific refresh before orchestration when a patch changes
   and needs to be normalized for OpenWrt submission. The command must run from
   a full OpenWrt checkout because it uses OpenWrt package build rules and quilt
@@ -183,8 +242,9 @@ Refreshing pinned patches:
   `PATCH_SHA256` before building:
 
 ```sh
-OPENWRT=/path/to/openwrt
-PATCH=patches/subsys/400-mac80211-defer-ap-side-ft-key-upload.patch
+OPENWRT=/path/to/openwrt  # checked out at the release's tag
+RELEASE=25.12.5
+PATCH=patches/$RELEASE/subsys/400-mac80211-defer-ap-side-ft-key-upload.patch
 DEST=package/kernel/mac80211/patches/subsys/400-mac80211-defer-ap-side-ft-key-upload.patch
 
 cp "$PATCH" "$OPENWRT/$DEST"
@@ -198,7 +258,7 @@ cp "$OPENWRT/$DEST" "$PATCH"
 sha256sum "$PATCH"
 ```
 
-- Copy the printed SHA-256 into `PATCH_SHA256` in the relevant `locks/*.lock`,
+- Copy the printed SHA-256 into `PATCH_SHA256` in the locks for that release,
   then run `./scripts/orchestrate-ec2-build.sh <ssh-target> locks/<device>.lock`.
 - `scripts/ci/check-locks.sh` also requires every local feed package that
   repackages an APK to name the same `PKG_SOURCE` and `PKG_HASH` as the lock's
@@ -206,8 +266,8 @@ sha256sum "$PATCH"
 
 What it fixes:
 - The mac80211 patch follows wireless-next v4 (source commit
-  `33d4e0eb234c721f655bf6386ca3faf62f09626d`), adapted to the pinned
-  backports 6.18.26 sources.
+  `33d4e0eb234c721f655bf6386ca3faf62f09626d`). The 25.12.5 and 25.12.6 copies
+  are adapted to those releases' backports 6.18.26 and 6.18.55 sources.
 - When automatic software fallback is allowed, `mac80211` accepts AP / AP_VLAN
   pre-`ASSOC` pairwise keys once a STA object exists and marks each accepted
   key for deferred hardware upload. Drivers advertising `SW_CRYPTO_CONTROL`
@@ -453,3 +513,6 @@ References:
 - Current upstream `cfg.c`: `https://github.com/torvalds/linux/blob/master/net/mac80211/cfg.c`
 - Current OpenWrt `openwrt-25.12` `ap.uc`: `https://github.com/openwrt/openwrt/blob/openwrt-25.12/package/network/config/wifi-scripts/files-ucode/usr/share/ucode/wifi/ap.uc`
 - OpenWrt FT generation change history: `https://lists.infradead.org/pipermail/lede-commits/2024-December/023531.html`
+
+License:
+- GPL-2.0-only. See [LICENSE](LICENSE).

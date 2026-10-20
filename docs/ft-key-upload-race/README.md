@@ -1,7 +1,7 @@
 # AP-side 802.11r FT key upload race
 
 This note explains the mac80211 side of the problem addressed by
-`patches/subsys/400-mac80211-defer-ap-side-ft-key-upload.patch` and the
+`patches/25.12.5/subsys/400-mac80211-defer-ap-side-ft-key-upload.patch` and the
 OpenWrt PR at <https://github.com/openwrt/openwrt/pull/23181>.
 
 The OpenWrt copy remains an out-of-tree patch. An upstream version was posted
@@ -457,7 +457,7 @@ the absence of that one error does not validate the whole roam.
 
 ## References
 
-- Local mac80211 patch: `../../patches/subsys/400-mac80211-defer-ap-side-ft-key-upload.patch`
+- Local mac80211 patch (OpenWrt 25.12.5): `../../patches/25.12.5/subsys/400-mac80211-defer-ap-side-ft-key-upload.patch`
 - OpenWrt PR: <https://github.com/openwrt/openwrt/pull/23181>
 - Historical mac80211 FT behavior discussion: <https://www.spinics.net/lists/kernel/msg1478599.html>
 - OpenWrt forum report of the same hostapd log: <https://forum.openwrt.org/t/daemon-err-hostapd-nl80211-kernel-reports-key-addition-failed-is-this-a-problem/100370?page=2>

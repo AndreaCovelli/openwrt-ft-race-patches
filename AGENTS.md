@@ -13,8 +13,10 @@ builds or router upgrades unless the user explicitly asks.
 
 - `README.md` is the user-facing operating guide. Keep command examples and
   behavior descriptions in sync with script changes.
-- `patches/subsys/400-mac80211-defer-ap-side-ft-key-upload.patch` is copied into
-  OpenWrt at `package/kernel/mac80211/patches/subsys/`.
+- `patches/<release>/subsys/400-mac80211-defer-ap-side-ft-key-upload.patch` is
+  the stable patch refreshed for one OpenWrt release, for example
+  `patches/25.12.5/subsys/`. It is copied into OpenWrt at
+  `package/kernel/mac80211/patches/subsys/`.
 - `patches/main/subsys/400-wifi-mac80211-defer-ap-side-ft-key-upload.patch` is
   the same change refreshed for the backports version on OpenWrt `main`. Only
   `locks/build-wr3000e-main.lock` uses it.
@@ -55,6 +57,7 @@ scripts/ci/check-prebuilt-apks.sh
 scripts/ci/check-run-local-docker-build.sh
 scripts/ci/check-incremental-build.sh
 scripts/ci/check-imagebuilder.sh
+scripts/ci/check-build-kmod.sh
 scripts/ci/check-pin-imagebuilder.sh
 scripts/ci/check-world-config.sh
 scripts/ci/check-ec2-cleanup.sh
@@ -80,6 +83,11 @@ resources:
 
 Do not run those full build or EC2 commands unless the user asked for them.
 
+`./scripts/build-kmod.sh <openwrt-version> <target>/<subtarget>` downloads a
+release SDK, clones the OpenWrt base feed, and compiles mac80211. Treat it like
+a build: run `scripts/ci/check-build-kmod.sh` for changes to it, and run the
+real command only when asked.
+
 ## Shell Style
 
 - Use Bash with `set -euo pipefail` for repository scripts.
@@ -97,6 +105,10 @@ Do not run those full build or EC2 commands unless the user asked for them.
   `locks/*.lock` file. Verify with `scripts/ci/check-locks.sh`.
 - Refresh the stable and `main` patch forms separately against the backports
   version of their own OpenWrt checkout. Do not copy one over the other.
+- Keep one stable patch directory per release. A tagged lock's patches must be
+  in `patches/<OPENWRT_TAG without v>/subsys/`; the untagged `main` lock's in
+  `patches/main/subsys/`. For a new release, add a refreshed copy in a new
+  directory and leave earlier releases' patches unchanged.
 - If a lock pins additional mac80211 patches through `EXTRA_PATCH_SOURCES`,
   update the matching `EXTRA_PATCH_SHA256S` entry when editing one. Verify with
   `scripts/ci/check-locks.sh`.
