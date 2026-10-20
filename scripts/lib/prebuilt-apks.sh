@@ -112,3 +112,19 @@ prebuilt_apk_download_all() {
     prebuilt_apk_download_one "$dl_dir" "$entry"
   done
 }
+
+# Print the lock's PREBUILT_APKS entries, NUL-terminated, without leaking the
+# lock's other assignments into the caller.
+prebuilt_apk_lock_entries() {
+  local lock_file="$1"
+
+  (
+    unset PREBUILT_APKS
+    # shellcheck source=/dev/null
+    source "$lock_file"
+    if declare -p PREBUILT_APKS >/dev/null 2>&1; then
+      local -n prebuilt_apks=PREBUILT_APKS
+      printf '%s\0' "${prebuilt_apks[@]}"
+    fi
+  )
+}

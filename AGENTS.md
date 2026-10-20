@@ -62,6 +62,7 @@ scripts/ci/check-pin-imagebuilder.sh
 scripts/ci/check-world-config.sh
 scripts/ci/check-ec2-cleanup.sh
 scripts/ci/check-ec2-fetch.sh
+scripts/ci/check-ec2-remote-build.sh
 hadolint docker/Dockerfile.ec2
 ```
 

@@ -178,7 +178,7 @@ assert_not_contains "$FAKE_CURL_LOG" 'arg=Authorization'
 fixture="$tmp_root/repo"
 mkdir -p "$fixture/scripts/lib" "$fixture/locks"
 cp "$repo_root/scripts/orchestrate-ec2-build.sh" "$fixture/scripts/"
-cp "$repo_root/scripts/lib/"{build-name,builder-image,prebuilt-apks}.sh "$fixture/scripts/lib/"
+cp "$repo_root/scripts/lib/"{build-name,build-wrapper,builder-image,prebuilt-apks}.sh "$fixture/scripts/lib/"
 printf "PREBUILT_APKS=('%s')\n" "$entry" >"$fixture/locks/test.lock"
 git -C "$fixture" init -q
 git -C "$fixture" add scripts locks

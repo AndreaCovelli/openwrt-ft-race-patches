@@ -127,7 +127,7 @@ trap 'rm -rf "$tmp_root"' EXIT
 repo_root="$tmp_root/repo"
 mkdir -p "$repo_root/scripts/lib" "$repo_root/locks"
 cp "$source_repo/scripts/run-local-docker-build.sh" "$repo_root/scripts/"
-cp "$source_repo/scripts/lib/"{build-name,builder-image,prebuilt-apks}.sh "$repo_root/scripts/lib/"
+cp "$source_repo/scripts/lib/"{build-name,build-wrapper,builder-image,prebuilt-apks}.sh "$repo_root/scripts/lib/"
 cp "$source_repo/locks/build-wr3000.lock" "$repo_root/locks/"
 wrapper="$repo_root/scripts/run-local-docker-build.sh"
 lock_file="$repo_root/locks/build-wr3000.lock"

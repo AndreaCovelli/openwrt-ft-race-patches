@@ -9,6 +9,8 @@ REPO_ROOT="$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)"
 
 # shellcheck source=scripts/lib/build-name.sh
 source "$SCRIPT_DIR/lib/build-name.sh"
+# shellcheck source=scripts/lib/download.sh
+source "$SCRIPT_DIR/lib/download.sh"
 # shellcheck source=scripts/lib/imagebuilder.sh
 source "$SCRIPT_DIR/lib/imagebuilder.sh"
 # shellcheck source=scripts/lib/local-feeds.sh
@@ -396,15 +398,28 @@ write_local_feeds_conf() {
   done
 }
 
+# Every lock pins these feeds as FEED_<NAME>_URL and FEED_<NAME>_REF.
+PINNED_FEEDS=(packages luci routing telephony video)
+
+feed_url() {
+  local var="FEED_${1^^}_URL"
+  printf '%s' "${!var}"
+}
+
+feed_ref() {
+  local var="FEED_${1^^}_REF"
+  printf '%s' "${!var}"
+}
+
 write_feeds_conf() {
-  cat >"$OPENWRT_DIR/feeds.conf" <<EOF
-$(write_local_feeds_conf)
-src-git-full packages ${FEED_PACKAGES_URL}^${FEED_PACKAGES_REF}
-src-git-full luci ${FEED_LUCI_URL}^${FEED_LUCI_REF}
-src-git-full routing ${FEED_ROUTING_URL}^${FEED_ROUTING_REF}
-src-git-full telephony ${FEED_TELEPHONY_URL}^${FEED_TELEPHONY_REF}
-src-git-full video ${FEED_VIDEO_URL}^${FEED_VIDEO_REF}
-EOF
+  local feed
+
+  {
+    printf '%s\n' "$(write_local_feeds_conf)"
+    for feed in "${PINNED_FEEDS[@]}"; do
+      printf 'src-git-full %s %s^%s\n' "$feed" "$(feed_url "$feed")" "$(feed_ref "$feed")"
+    done
+  } >"$OPENWRT_DIR/feeds.conf"
 }
 
 install_local_feed_packages() {
@@ -591,7 +606,7 @@ write_imagebuilder_compatibility_entries() {
 }
 
 write_compatibility_manifest() {
-  local i index name file url sha256
+  local i index name file url sha256 feed
 
   {
     state_entry build_method "$BUILD_METHOD"
@@ -599,16 +614,6 @@ write_compatibility_manifest() {
     state_entry builder_platform "${BUILDER_PLATFORM:-unknown}"
     state_entry ccache "$USE_CCACHE_MODE"
     state_entry device_id "$DEVICE_ID"
-    state_entry feed.luci.ref "$FEED_LUCI_REF"
-    state_entry feed.luci.url "$FEED_LUCI_URL"
-    state_entry feed.packages.ref "$FEED_PACKAGES_REF"
-    state_entry feed.packages.url "$FEED_PACKAGES_URL"
-    state_entry feed.routing.ref "$FEED_ROUTING_REF"
-    state_entry feed.routing.url "$FEED_ROUTING_URL"
-    state_entry feed.telephony.ref "$FEED_TELEPHONY_REF"
-    state_entry feed.telephony.url "$FEED_TELEPHONY_URL"
-    state_entry feed.video.ref "$FEED_VIDEO_REF"
-    state_entry feed.video.url "$FEED_VIDEO_URL"
     state_entry openwrt.ref "$OPENWRT_REF"
     state_entry openwrt.repo_url "$OPENWRT_REPO_URL"
     state_entry openwrt.tag "${OPENWRT_TAG:-}"
@@ -618,6 +623,11 @@ write_compatibility_manifest() {
     state_entry workspace_path "$BUILD_ROOT"
     state_entry world_source.path "$WORLD_SOURCE"
     state_entry world_source.sha256 "$(sha256sum "$WORLD_SOURCE_ABS" | awk '{print $1}')"
+
+    for feed in "${PINNED_FEEDS[@]}"; do
+      state_entry "feed.$feed.ref" "$(feed_ref "$feed")"
+      state_entry "feed.$feed.url" "$(feed_url "$feed")"
+    done
 
     for i in "${!PINNED_PATCH_SOURCES[@]}"; do
       printf -v index '%03d' "$i"
@@ -750,46 +760,6 @@ patch_destination_path() {
   fi
 }
 
-sha256_of() {
-  sha256sum "$1" | awk '{print $1}'
-}
-
-# Download URL to DEST unless DEST already has the expected checksum. A
-# mismatch fails closed; HINT explains how to refresh the pin.
-fetch_verified_file() {
-  local url="$1"
-  local dest="$2"
-  local expected="$3"
-  local hint="${4:-}"
-  local tmp actual
-
-  if [[ -f "$dest" ]] && [[ "$(sha256_of "$dest")" == "$expected" ]]; then
-    return 0
-  fi
-
-  mkdir -p "$(dirname -- "$dest")"
-  tmp="$(mktemp "$dest.tmp.XXXXXXXX")"
-  if ! curl -fsSL \
-    --proto '=https' \
-    --proto-redir '=https' \
-    --connect-timeout 10 \
-    --max-time 1800 \
-    --retry 3 \
-    --retry-connrefused \
-    -o "$tmp" \
-    "$url"; then
-    rm -f -- "$tmp"
-    die "failed to download $url"
-  fi
-
-  actual="$(sha256_of "$tmp")"
-  if [[ "$actual" != "$expected" ]]; then
-    rm -f -- "$tmp"
-    die "sha256 mismatch for $url: expected $expected got $actual${hint:+; $hint}"
-  fi
-  mv -f -- "$tmp" "$dest"
-}
-
 imagebuilder_validate_lock() {
   local name value entry url sha256 dest install package prebuilt_entry
   local prebuilt_name file found
@@ -861,13 +831,17 @@ sdk_source_packages() {
   done
 }
 
-expected_sdk_feeds() {
+sdk_base_feed() {
   printf 'src-git --root=package base %s^%s\n' "$OPENWRT_REPO_URL" "$OPENWRT_REF"
-  printf 'src-git packages %s^%s\n' "$FEED_PACKAGES_URL" "$FEED_PACKAGES_REF"
-  printf 'src-git luci %s^%s\n' "$FEED_LUCI_URL" "$FEED_LUCI_REF"
-  printf 'src-git routing %s^%s\n' "$FEED_ROUTING_URL" "$FEED_ROUTING_REF"
-  printf 'src-git telephony %s^%s\n' "$FEED_TELEPHONY_URL" "$FEED_TELEPHONY_REF"
-  printf 'src-git video %s^%s\n' "$FEED_VIDEO_URL" "$FEED_VIDEO_REF"
+}
+
+expected_sdk_feeds() {
+  local feed
+
+  sdk_base_feed
+  for feed in "${PINNED_FEEDS[@]}"; do
+    printf 'src-git %s %s^%s\n' "$feed" "$(feed_url "$feed")" "$(feed_ref "$feed")"
+  done
 }
 
 # The official SDK records the exact OpenWrt and feed commits of its release.
@@ -897,13 +871,13 @@ prepare_sdk() {
 
   archive="$DL_DIR/$(basename -- "$SDK_URL")"
   log "Fetching pinned OpenWrt SDK"
-  fetch_verified_file "$SDK_URL" "$archive" "$SDK_SHA256"
+  download_verified_file "$SDK_URL" "$archive" "$SDK_SHA256" || exit 1
   log "Extracting OpenWrt SDK"
   extract_pinned_archive "$archive" "$SDK_DIR"
   verify_sdk_feeds
 
   log "Writing pinned SDK base feed definition"
-  expected_sdk_feeds | head -n1 >"$SDK_DIR/feeds.conf"
+  sdk_base_feed >"$SDK_DIR/feeds.conf"
   (
     cd "$SDK_DIR"
     ./scripts/feeds update base
@@ -957,7 +931,7 @@ prepare_imagebuilder() {
 
   archive="$DL_DIR/$(basename -- "$IMAGEBUILDER_URL")"
   log "Fetching pinned OpenWrt ImageBuilder"
-  fetch_verified_file "$IMAGEBUILDER_URL" "$archive" "$IMAGEBUILDER_SHA256"
+  download_verified_file "$IMAGEBUILDER_URL" "$archive" "$IMAGEBUILDER_SHA256" || exit 1
   log "Extracting OpenWrt ImageBuilder"
   extract_pinned_archive "$archive" "$IB_DIR"
   [[ -d "$IB_DIR/packages" ]] || die "ImageBuilder has no packages directory: $IB_DIR"
@@ -994,8 +968,9 @@ fetch_imagebuilder_indexes() {
 
   for entry in "${IMAGEBUILDER_REPOSITORIES[@]}"; do
     imagebuilder_parse_repository "$entry" url sha256 || die 'invalid IMAGEBUILDER_REPOSITORIES entry'
-    fetch_verified_file "$url" "$IB_INDEX_STORE/$sha256.adb" "$sha256" \
-      'the upstream index changed; refresh the lock with scripts/pin-imagebuilder.sh'
+    download_verified_file "$url" "$IB_INDEX_STORE/$sha256.adb" "$sha256" \
+      'the upstream index changed; refresh the lock with scripts/pin-imagebuilder.sh' ||
+      exit 1
   done
 }
 
@@ -1026,7 +1001,7 @@ verify_imagebuilder_apk_cache() {
   for entry in "${IMAGEBUILDER_REPOSITORIES[@]}"; do
     imagebuilder_parse_repository "$entry" url sha256 || die 'invalid IMAGEBUILDER_REPOSITORIES entry'
     name="$(imagebuilder_index_cache_name "$url")"
-    [[ -f "$IB_APK_CACHE/$name" && "$(sha256_of "$IB_APK_CACHE/$name")" == "$sha256" ]] ||
+    [[ -f "$IB_APK_CACHE/$name" && "$(download_sha256 "$IB_APK_CACHE/$name")" == "$sha256" ]] ||
       die "pinned repository index changed during the image build: $url"
   done
 }
@@ -1081,7 +1056,7 @@ assemble_imagebuilder_packages() {
     [[ ! -e "$IB_DIR/packages/$(basename -- "$apk")" ]] ||
       die "patched package collides with a shipped ImageBuilder package: $(basename -- "$apk")"
     cp -- "$apk" "$IB_DIR/packages/"
-    printf 'sdk\t%s\t%s\t%s\n' "$package" "$(basename -- "$apk")" "$(sha256_of "$apk")" \
+    printf 'sdk\t%s\t%s\t%s\n' "$package" "$(basename -- "$apk")" "$(download_sha256 "$apk")" \
       >>"$REPORT_DIR/imagebuilder-injected.tsv"
   done
 
@@ -1480,35 +1455,30 @@ fi
 declare -A REBUILD_PACKAGES_SET=()
 REBUILT_PACKAGES=()
 
-verify_source_workspace() {
+verify_openwrt_tag() {
   local tag_ref
-
-  [[ -d "$OPENWRT_DIR/.git" && -f "$OPENWRT_DIR/.config" ]] ||
-    die "workspace checkout is incomplete: $BUILD_ROOT; rerun with --fresh"
-  verify_checkout "$OPENWRT_DIR" "$OPENWRT_REF"
-  verify_not_shallow "$OPENWRT_DIR"
-  verify_tracked_files_clean "$OPENWRT_DIR" "${PINNED_PATCH_DESTS[@]}"
-  verify_checkout "$OPENWRT_DIR/feeds/packages" "$FEED_PACKAGES_REF"
-  verify_checkout "$OPENWRT_DIR/feeds/luci" "$FEED_LUCI_REF"
-  verify_checkout "$OPENWRT_DIR/feeds/routing" "$FEED_ROUTING_REF"
-  verify_checkout "$OPENWRT_DIR/feeds/telephony" "$FEED_TELEPHONY_REF"
-  verify_checkout "$OPENWRT_DIR/feeds/video" "$FEED_VIDEO_REF"
-  verify_not_shallow "$OPENWRT_DIR/feeds/packages"
-  verify_not_shallow "$OPENWRT_DIR/feeds/luci"
-  verify_not_shallow "$OPENWRT_DIR/feeds/routing"
-  verify_not_shallow "$OPENWRT_DIR/feeds/telephony"
-  verify_not_shallow "$OPENWRT_DIR/feeds/video"
-  verify_tracked_files_clean "$OPENWRT_DIR/feeds/packages"
-  verify_tracked_files_clean "$OPENWRT_DIR/feeds/luci"
-  verify_tracked_files_clean "$OPENWRT_DIR/feeds/routing"
-  verify_tracked_files_clean "$OPENWRT_DIR/feeds/telephony"
-  verify_tracked_files_clean "$OPENWRT_DIR/feeds/video"
 
   if [[ -n "${OPENWRT_TAG:-}" ]]; then
     tag_ref="$(git -C "$OPENWRT_DIR" rev-list -n1 "$OPENWRT_TAG")"
     [[ "$tag_ref" == "$OPENWRT_REF" ]] ||
       die "tag $OPENWRT_TAG does not resolve to $OPENWRT_REF"
   fi
+}
+
+verify_source_workspace() {
+  local feed
+
+  [[ -d "$OPENWRT_DIR/.git" && -f "$OPENWRT_DIR/.config" ]] ||
+    die "workspace checkout is incomplete: $BUILD_ROOT; rerun with --fresh"
+  verify_checkout "$OPENWRT_DIR" "$OPENWRT_REF"
+  verify_not_shallow "$OPENWRT_DIR"
+  verify_tracked_files_clean "$OPENWRT_DIR" "${PINNED_PATCH_DESTS[@]}"
+  for feed in "${PINNED_FEEDS[@]}"; do
+    verify_checkout "$OPENWRT_DIR/feeds/$feed" "$(feed_ref "$feed")"
+    verify_not_shallow "$OPENWRT_DIR/feeds/$feed"
+    verify_tracked_files_clean "$OPENWRT_DIR/feeds/$feed"
+  done
+  verify_openwrt_tag
 }
 
 verify_imagebuilder_workspace() {
@@ -1674,18 +1644,13 @@ clone_pinned_repository() {
 }
 
 run_source_build() {
-  local tag_ref rebuild_selector rebuild_path
+  local feed rebuild_selector rebuild_path
   local -a rebuild_paths=() stale_target_images=()
 
   if [[ "$BUILD_MODE" == 'full' ]]; then
     log "Cloning OpenWrt core"
     clone_pinned_repository "$OPENWRT_REPO_URL" "$OPENWRT_DIR" "$OPENWRT_REF"
-
-    if [[ -n "${OPENWRT_TAG:-}" ]]; then
-      tag_ref="$(git -C "$OPENWRT_DIR" rev-list -n1 "$OPENWRT_TAG")"
-      [[ "$tag_ref" == "$OPENWRT_REF" ]] ||
-        die "tag $OPENWRT_TAG does not resolve to $OPENWRT_REF"
-    fi
+    verify_openwrt_tag
 
     log "Writing pinned feed definitions"
     write_feeds_conf
@@ -1693,11 +1658,10 @@ run_source_build() {
     # scripts/feeds keeps an existing pinned checkout. Its own clone would
     # fetch every historical blob; the branch name matches its checkout.
     log "Cloning pinned feeds"
-    clone_pinned_repository "$FEED_PACKAGES_URL" "$OPENWRT_DIR/feeds/packages" "$FEED_PACKAGES_REF" "$FEED_PACKAGES_REF"
-    clone_pinned_repository "$FEED_LUCI_URL" "$OPENWRT_DIR/feeds/luci" "$FEED_LUCI_REF" "$FEED_LUCI_REF"
-    clone_pinned_repository "$FEED_ROUTING_URL" "$OPENWRT_DIR/feeds/routing" "$FEED_ROUTING_REF" "$FEED_ROUTING_REF"
-    clone_pinned_repository "$FEED_TELEPHONY_URL" "$OPENWRT_DIR/feeds/telephony" "$FEED_TELEPHONY_REF" "$FEED_TELEPHONY_REF"
-    clone_pinned_repository "$FEED_VIDEO_URL" "$OPENWRT_DIR/feeds/video" "$FEED_VIDEO_REF" "$FEED_VIDEO_REF"
+    for feed in "${PINNED_FEEDS[@]}"; do
+      clone_pinned_repository "$(feed_url "$feed")" "$OPENWRT_DIR/feeds/$feed" \
+        "$(feed_ref "$feed")" "$(feed_ref "$feed")"
+    done
 
     log "Updating feeds"
     (
@@ -1705,17 +1669,10 @@ run_source_build() {
       ./scripts/feeds update -a
     )
 
-    verify_checkout "$OPENWRT_DIR/feeds/packages" "$FEED_PACKAGES_REF"
-    verify_checkout "$OPENWRT_DIR/feeds/luci" "$FEED_LUCI_REF"
-    verify_checkout "$OPENWRT_DIR/feeds/routing" "$FEED_ROUTING_REF"
-    verify_checkout "$OPENWRT_DIR/feeds/telephony" "$FEED_TELEPHONY_REF"
-    verify_checkout "$OPENWRT_DIR/feeds/video" "$FEED_VIDEO_REF"
-
-    verify_not_shallow "$OPENWRT_DIR/feeds/packages"
-    verify_not_shallow "$OPENWRT_DIR/feeds/luci"
-    verify_not_shallow "$OPENWRT_DIR/feeds/routing"
-    verify_not_shallow "$OPENWRT_DIR/feeds/telephony"
-    verify_not_shallow "$OPENWRT_DIR/feeds/video"
+    for feed in "${PINNED_FEEDS[@]}"; do
+      verify_checkout "$OPENWRT_DIR/feeds/$feed" "$(feed_ref "$feed")"
+      verify_not_shallow "$OPENWRT_DIR/feeds/$feed"
+    done
 
     log "Installing feeds"
     (

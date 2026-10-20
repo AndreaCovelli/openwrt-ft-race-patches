@@ -13,9 +13,6 @@ patch behavior, driver constraints, and roaming checks.
 
 Build entrypoints:
 - generic: `./scripts/build-image.sh --builder-id <builder-id> locks/<device>.lock`
-- example wrapper: `./scripts/build-wr3000.sh`
-- example wrapper: `./scripts/build-wr3000e.sh`
-- example wrapper: `./scripts/build-wr3000p.sh`
 - ASU-like latest release preparation:
   `./scripts/prepare-openwrt-upgrade.sh wr3000e locks/build-wr3000e.lock -- --make-jobs 4 --download-jobs 8`
 - stable upgrade guide:
@@ -389,15 +386,15 @@ Local Docker builds:
   `--builder-id <id>` (or `BUILDER_ID`) so a workspace cannot be reused across
   an unrecorded builder-environment change. The Docker wrapper inspects the
   selected image and supplies its immutable image ID automatically.
-- The device wrappers use `direct-host` as the default direct-builder identity
-  so their zero-argument examples remain usable. Set `BUILDER_ID` explicitly
-  when switching the host toolchain or maintaining more than one direct build
-  environment.
 
 EC2 orchestration:
-- `scripts/orchestrate-ec2-build.sh` uploads a fresh snapshot of this repo to the EC2 host, prepares a per-run remote workspace, builds `docker/Dockerfile.ec2`, and starts the image build in a detached `tmux` session.
+- `scripts/orchestrate-ec2-build.sh` uploads a fresh snapshot of this repo to
+  the EC2 host, prepares a per-run remote directory, and runs
+  `scripts/run-local-docker-build.sh` from that snapshot in a detached `tmux`
+  session. The builder options it accepts are passed through unchanged.
 - EC2 workspaces remain session-scoped and disposable: every remote run is a
-  full build and does not reuse a prior OpenWrt compiled tree.
+  `--fresh` full build in the session's workspace and does not reuse a prior
+  OpenWrt compiled tree.
 - `scripts/run-ec2-build.sh` provisions a temporary EC2 builder, creates a
   temporary SSH-only security group restricted to the current client public IP,
   runs the orchestrator through a temporary SSH config file, fetches artifacts,

@@ -10,6 +10,8 @@ REPO_ROOT="$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)"
 
 # shellcheck source=scripts/lib/build-name.sh
 source "$SCRIPT_DIR/lib/build-name.sh"
+# shellcheck source=scripts/lib/build-wrapper.sh
+source "$SCRIPT_DIR/lib/build-wrapper.sh"
 # shellcheck source=scripts/lib/prebuilt-apks.sh
 source "$SCRIPT_DIR/lib/prebuilt-apks.sh"
 # shellcheck source=scripts/lib/builder-image.sh
@@ -79,41 +81,10 @@ require_cmd() {
   done
 }
 
-lock_prebuilt_apks() {
-  (
-    unset PREBUILT_APKS
-    # shellcheck source=/dev/null
-    source "$LOCK_FILE"
-    if declare -p PREBUILT_APKS >/dev/null 2>&1; then
-      local -n prebuilt_apks=PREBUILT_APKS
-      printf '%s\0' "${prebuilt_apks[@]}"
-    fi
-  )
-}
-
-abs_repo_path() {
-  local path="$1"
-  if [[ "$path" = /* ]]; then
-    printf '%s\n' "$path"
-  else
-    printf '%s/%s\n' "$REPO_ROOT" "$path"
-  fi
-}
-
-SESSION_NAME=''
+build_wrapper_option_defaults
 WORKSPACE_NAME=''
-BUILD_METHOD=''
 ARTIFACT_DIR=''
-BUILDER_IMAGE="$DEFAULT_BUILDER_IMAGE"
-REBUILD_BUILDER_IMAGE='0'
 PULL_BUILDER_IMAGE='1'
-IMAGE_TAG='patch-fix-openwrt-builder'
-BUILDER_PLATFORM='linux/amd64'
-BUILDER_BASE_IMAGE=''
-UBUNTU_SNAPSHOT=''
-MAKE_JOBS=''
-DOWNLOAD_JOBS=''
-STRICT_MANIFEST='1'
 HOST_CACHE_DIR='cache'
 USE_CCACHE='1'
 CCACHE_MAXSIZE='20G'
@@ -123,24 +94,15 @@ OPENWRT_DOCKER_BIN="${OPENWRT_DOCKER_BIN:-docker}"
 
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
+  build_wrapper_take_option "$@" || exit 1
+  if ((BUILD_WRAPPER_SHIFT > 0)); then
+    shift "$BUILD_WRAPPER_SHIFT"
+    continue
+  fi
   case "$1" in
-    --session)
-      [[ $# -ge 2 ]] || die "--session requires a value"
-      SESSION_NAME="$2"
-      shift 2
-      ;;
     --workspace)
       [[ $# -ge 2 ]] || die "--workspace requires a value"
       WORKSPACE_NAME="$2"
-      shift 2
-      ;;
-    --build-method)
-      [[ $# -ge 2 ]] || die "--build-method requires a value"
-      case "$2" in
-        source|imagebuilder) ;;
-        *) die "--build-method must be source or imagebuilder" ;;
-      esac
-      BUILD_METHOD="$2"
       shift 2
       ;;
     --artifact-dir)
@@ -161,55 +123,8 @@ while [[ $# -gt 0 ]]; do
       REBUILD_PACKAGES+=("$2")
       shift 2
       ;;
-    --builder-image)
-      [[ $# -ge 2 ]] || die "--builder-image requires a value"
-      BUILDER_IMAGE="$2"
-      shift 2
-      ;;
     --no-pull)
       PULL_BUILDER_IMAGE='0'
-      shift
-      ;;
-    --rebuild-builder-image)
-      REBUILD_BUILDER_IMAGE='1'
-      shift
-      ;;
-    --image-tag)
-      [[ $# -ge 2 ]] || die "--image-tag requires a value"
-      IMAGE_TAG="$2"
-      shift 2
-      ;;
-    --platform)
-      [[ $# -ge 2 ]] || die "--platform requires a value"
-      BUILDER_PLATFORM="$2"
-      shift 2
-      ;;
-    --builder-base-image)
-      [[ $# -ge 2 ]] || die "--builder-base-image requires a value"
-      BUILDER_BASE_IMAGE="$2"
-      shift 2
-      ;;
-    --ubuntu-snapshot)
-      [[ $# -ge 2 ]] || die "--ubuntu-snapshot requires a value"
-      UBUNTU_SNAPSHOT="$2"
-      shift 2
-      ;;
-    --make-jobs)
-      [[ $# -ge 2 ]] || die "--make-jobs requires a value"
-      MAKE_JOBS="$2"
-      shift 2
-      ;;
-    --download-jobs)
-      [[ $# -ge 2 ]] || die "--download-jobs requires a value"
-      DOWNLOAD_JOBS="$2"
-      shift 2
-      ;;
-    --strict-manifest)
-      STRICT_MANIFEST='1'
-      shift
-      ;;
-    --no-strict-manifest)
-      STRICT_MANIFEST='0'
       shift
       ;;
     --ccache)
@@ -259,13 +174,8 @@ done
   exit 1
 }
 
-LOCK_FILE="$(abs_repo_path "${POSITIONAL[0]}")"
-[[ -f "$LOCK_FILE" ]] || die "lock file not found: $LOCK_FILE"
-case "$LOCK_FILE" in
-  "$REPO_ROOT"/*) ;;
-  *) die "lock file must live inside the repo: $LOCK_FILE" ;;
-esac
-LOCK_FILE_REL="${LOCK_FILE#"$REPO_ROOT"/}"
+build_wrapper_resolve_lock "$REPO_ROOT" "${POSITIONAL[0]}" LOCK_FILE LOCK_FILE_REL || exit 1
+BUILDER_IMAGE="${BUILDER_IMAGE:-$DEFAULT_BUILDER_IMAGE}"
 
 if [[ -z "$SESSION_NAME" ]]; then
   SESSION_NAME="$(openwrt_default_build_name_from_lock "$LOCK_FILE")"
@@ -282,25 +192,9 @@ if [[ "$BUILD_METHOD" == 'imagebuilder' ]]; then
       die '--rebuild-package local-feeds needs --build-method source'
   done
 fi
-case "$SESSION_NAME" in
-  *[!A-Za-z0-9._-]*)
-    die "session name contains unsupported characters: $SESSION_NAME"
-    ;;
-  .|..)
-    die "unsupported session name: $SESSION_NAME"
-    ;;
-esac
-case "$WORKSPACE_NAME" in
-  *[!A-Za-z0-9._-]*|.|..)
-    die "workspace name contains unsupported characters: $WORKSPACE_NAME"
-    ;;
-esac
-[[ -n "$WORKSPACE_NAME" ]] || die 'workspace name must not be empty'
+build_wrapper_check_name session "$SESSION_NAME" || exit 1
+build_wrapper_check_name workspace "$WORKSPACE_NAME" || exit 1
 
-case "$STRICT_MANIFEST" in
-  0|1) ;;
-  *) die "strict manifest value must be 0 or 1" ;;
-esac
 case "$USE_CCACHE" in
   0|1) ;;
   *) die "ccache value must be 0 or 1" ;;
@@ -310,13 +204,7 @@ case "$FRESH" in
   *) die "fresh value must be 0 or 1" ;;
 esac
 
-[[ -n "$BUILDER_PLATFORM" ]] || die "--platform must not be empty"
-[[ -n "$BUILDER_IMAGE" ]] || die "--builder-image must not be empty"
 [[ -n "$OPENWRT_DOCKER_BIN" ]] || die "OPENWRT_DOCKER_BIN must not be empty"
-case "$REBUILD_BUILDER_IMAGE" in
-  0|1) ;;
-  *) die "rebuild builder image value must be 0 or 1" ;;
-esac
 
 if [[ -z "$ARTIFACT_DIR" ]]; then
   ARTIFACT_DIR="$REPO_ROOT/openwrt-artifacts/$SESSION_NAME"
@@ -467,7 +355,7 @@ mkdir -p "$HOST_CACHE_DIR" "$WORKSPACE_DIR"
 if [[ "$USE_CCACHE" == '1' ]]; then
   mkdir -p "$HOST_CACHE_DIR/ccache"
 fi
-mapfile -d '' -t LOCK_PREBUILT_APKS < <(lock_prebuilt_apks)
+mapfile -d '' -t LOCK_PREBUILT_APKS < <(prebuilt_apk_lock_entries "$LOCK_FILE")
 if ((${#LOCK_PREBUILT_APKS[@]} > 0)); then
   log "Downloading pinned prebuilt APKs into local cache"
   (
@@ -487,8 +375,7 @@ fi
   ./scripts/build-image.sh "$LOCK_FILE_REL"
 
 log "Copying build output for $ARTIFACT_DIR"
-mkdir -p -- "${ARTIFACT_DIR%/*}"
-ARTIFACT_STAGING_DIR="$(mktemp -d "${ARTIFACT_DIR%/*}/.openwrt-ft-artifacts.XXXXXXXX")"
+ARTIFACT_STAGING_DIR="$(build_wrapper_create_staging "$ARTIFACT_DIR")"
 cleanup_artifact_staging() {
   local status=$?
   if [[ -n "$ARTIFACT_STAGING_DIR" ]]; then
@@ -499,18 +386,9 @@ cleanup_artifact_staging() {
 trap cleanup_artifact_staging EXIT
 cp -a "$WORKSPACE_DIR/output/." "$ARTIFACT_STAGING_DIR/"
 
-[[ -f "$ARTIFACT_STAGING_DIR/sha256sums.txt" ]] ||
-  die "artifact checksum file not found in build output"
 log "Verifying copied artifact checksums"
-(
-  cd "$ARTIFACT_STAGING_DIR"
-  sha256sum -c sha256sums.txt
-)
-# -T prevents nesting into an existing directory; --no-clobber also protects
-# destinations created while the build was running. A skipped move exits zero.
-mv -T --no-clobber -- "$ARTIFACT_STAGING_DIR" "$ARTIFACT_DIR"
-[[ ! -d "$ARTIFACT_STAGING_DIR" ]] ||
-  die "artifact destination appeared during the build; preserved it: $ARTIFACT_DIR"
+build_wrapper_verify_artifacts "$ARTIFACT_STAGING_DIR" || exit 1
+build_wrapper_publish_artifacts "$ARTIFACT_STAGING_DIR" "$ARTIFACT_DIR" || exit 1
 ARTIFACT_STAGING_DIR=''
 log "Artifact directory: $ARTIFACT_DIR"
 log "Build workspace retained: $WORKSPACE_DIR"

@@ -7,7 +7,7 @@ trap 'rm -rf "$tmp_root"' EXIT
 fixture="$tmp_root/repo"
 mkdir -p "$fixture/scripts/lib" "$fixture/locks"
 cp "$repo_root/scripts/run-ec2-build.sh" "$fixture/scripts/"
-cp "$repo_root/scripts/lib/build-name.sh" "$fixture/scripts/lib/"
+cp "$repo_root/scripts/lib/"{build-name,build-wrapper}.sh "$fixture/scripts/lib/"
 : >"$fixture/locks/test.lock"
 : >"$tmp_root/fake-key"
 cat >"$fixture/scripts/orchestrate-ec2-build.sh" <<'EOF'

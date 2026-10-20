@@ -10,6 +10,8 @@ REPO_ROOT="$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)"
 
 # shellcheck source=scripts/lib/build-name.sh
 source "$SCRIPT_DIR/lib/build-name.sh"
+# shellcheck source=scripts/lib/build-wrapper.sh
+source "$SCRIPT_DIR/lib/build-wrapper.sh"
 
 usage() {
   cat <<'EOF'
@@ -33,6 +35,7 @@ Options:
   --builder-image REF       Prebuilt Docker builder image passed through.
   --rebuild-builder-image   Build docker/Dockerfile.ec2 on the remote host
                             instead of pulling the prebuilt builder image.
+  --image-tag TAG           Pass through: image tag for --rebuild-builder-image.
   --make-jobs N             Pass through to orchestrate-ec2-build.sh.
   --download-jobs N         Pass through to orchestrate-ec2-build.sh.
   --strict-manifest         Pass through. Default behavior.
@@ -98,18 +101,9 @@ AMI_ID=''
 VPC_ID=''
 SUBNET_ID=''
 AWS_REGION="${AWS_REGION:-}"
-SESSION_NAME=''
+build_wrapper_option_defaults
 ARTIFACT_DIR=''
-BUILDER_IMAGE=''
-REBUILD_BUILDER_IMAGE='0'
-MAKE_JOBS=''
-DOWNLOAD_JOBS=''
-STRICT_ARG=()
-BUILD_METHOD_ARG=()
 INCLUDE_UNTRACKED='0'
-BUILDER_PLATFORM='linux/amd64'
-BUILDER_BASE_IMAGE=''
-UBUNTU_SNAPSHOT=''
 REMOTE_ROOT=''
 KEEP_INSTANCE='0'
 MARKET_TYPE='spot'
@@ -117,6 +111,11 @@ MAX_RUNTIME_MINUTES='360'
 
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
+  build_wrapper_take_option "$@" || exit 1
+  if ((BUILD_WRAPPER_SHIFT > 0)); then
+    shift "$BUILD_WRAPPER_SHIFT"
+    continue
+  fi
   case "$1" in
     --region)
       [[ $# -ge 2 ]] || die "--region requires a value"
@@ -158,70 +157,14 @@ while [[ $# -gt 0 ]]; do
       SUBNET_ID="$2"
       shift 2
       ;;
-    --session)
-      [[ $# -ge 2 ]] || die "--session requires a value"
-      SESSION_NAME="$2"
-      shift 2
-      ;;
     --artifact-dir)
       [[ $# -ge 2 ]] || die "--artifact-dir requires a value"
       ARTIFACT_DIR="$2"
       shift 2
       ;;
-    --builder-image)
-      [[ $# -ge 2 ]] || die "--builder-image requires a value"
-      BUILDER_IMAGE="$2"
-      shift 2
-      ;;
-    --rebuild-builder-image)
-      REBUILD_BUILDER_IMAGE='1'
-      shift
-      ;;
-    --make-jobs)
-      [[ $# -ge 2 ]] || die "--make-jobs requires a value"
-      MAKE_JOBS="$2"
-      shift 2
-      ;;
-    --download-jobs)
-      [[ $# -ge 2 ]] || die "--download-jobs requires a value"
-      DOWNLOAD_JOBS="$2"
-      shift 2
-      ;;
-    --strict-manifest)
-      STRICT_ARG=(--strict-manifest)
-      shift
-      ;;
-    --no-strict-manifest)
-      STRICT_ARG=(--no-strict-manifest)
-      shift
-      ;;
-    --build-method)
-      [[ $# -ge 2 ]] || die "--build-method requires a value"
-      case "$2" in
-        source|imagebuilder) ;;
-        *) die "--build-method must be source or imagebuilder" ;;
-      esac
-      BUILD_METHOD_ARG=(--build-method "$2")
-      shift 2
-      ;;
     --include-untracked)
       INCLUDE_UNTRACKED='1'
       shift
-      ;;
-    --platform)
-      [[ $# -ge 2 ]] || die "--platform requires a value"
-      BUILDER_PLATFORM="$2"
-      shift 2
-      ;;
-    --builder-base-image)
-      [[ $# -ge 2 ]] || die "--builder-base-image requires a value"
-      BUILDER_BASE_IMAGE="$2"
-      shift 2
-      ;;
-    --ubuntu-snapshot)
-      [[ $# -ge 2 ]] || die "--ubuntu-snapshot requires a value"
-      UBUNTU_SNAPSHOT="$2"
-      shift 2
       ;;
     --remote-root)
       [[ $# -ge 2 ]] || die "--remote-root requires a value"
@@ -267,18 +210,7 @@ done
   exit 1
 }
 
-LOCK_FILE="$(abs_repo_path "${POSITIONAL[0]}")"
-[[ -f "$LOCK_FILE" ]] || die "lock file not found: $LOCK_FILE"
-case "$LOCK_FILE" in
-  "$REPO_ROOT"/*) ;;
-  *) die "lock file must live inside the repo: $LOCK_FILE" ;;
-esac
-
-case "$SESSION_NAME" in
-  *[!A-Za-z0-9._-]*)
-    die "session name contains unsupported characters: $SESSION_NAME"
-    ;;
-esac
+build_wrapper_resolve_lock "$REPO_ROOT" "${POSITIONAL[0]}" LOCK_FILE LOCK_FILE_REL || exit 1
 
 case "$VOLUME_SIZE" in
   ''|*[!0-9]*) die "--volume-size must be an integer GiB value" ;;
@@ -288,11 +220,10 @@ case "$MAX_RUNTIME_MINUTES" in
   ''|*[!0-9]*) die "--max-runtime-minutes must be a non-negative integer" ;;
 esac
 
-LOCK_FILE_REL="${LOCK_FILE#"$REPO_ROOT"/}"
-
 if [[ -z "$SESSION_NAME" ]]; then
   SESSION_NAME="$(openwrt_default_build_name_from_lock "$LOCK_FILE")"
 fi
+build_wrapper_check_name session "$SESSION_NAME" || exit 1
 if [[ -z "$ARTIFACT_DIR" ]]; then
   ARTIFACT_DIR="$REPO_ROOT/openwrt-artifacts/$SESSION_NAME"
 fi
@@ -546,35 +477,11 @@ done
 
 orchestrator_args=(
   --session "$SESSION_NAME"
-  --platform "$BUILDER_PLATFORM"
   --fetch-artifacts "$ARTIFACT_DIR"
 )
+build_wrapper_option_args orchestrator_args
 if [[ -n "$REMOTE_ROOT" ]]; then
   orchestrator_args+=(--remote-root "$REMOTE_ROOT")
-fi
-if [[ -n "$BUILDER_IMAGE" ]]; then
-  orchestrator_args+=(--builder-image "$BUILDER_IMAGE")
-fi
-if [[ "$REBUILD_BUILDER_IMAGE" == '1' ]]; then
-  orchestrator_args+=(--rebuild-builder-image)
-fi
-if [[ -n "$MAKE_JOBS" ]]; then
-  orchestrator_args+=(--make-jobs "$MAKE_JOBS")
-fi
-if [[ -n "$DOWNLOAD_JOBS" ]]; then
-  orchestrator_args+=(--download-jobs "$DOWNLOAD_JOBS")
-fi
-if [[ -n "$BUILDER_BASE_IMAGE" ]]; then
-  orchestrator_args+=(--builder-base-image "$BUILDER_BASE_IMAGE")
-fi
-if [[ -n "$UBUNTU_SNAPSHOT" ]]; then
-  orchestrator_args+=(--ubuntu-snapshot "$UBUNTU_SNAPSHOT")
-fi
-if [[ ${#STRICT_ARG[@]} -gt 0 ]]; then
-  orchestrator_args+=("${STRICT_ARG[@]}")
-fi
-if [[ ${#BUILD_METHOD_ARG[@]} -gt 0 ]]; then
-  orchestrator_args+=("${BUILD_METHOD_ARG[@]}")
 fi
 if [[ "$INCLUDE_UNTRACKED" == '1' ]]; then
   orchestrator_args+=(--include-untracked)
