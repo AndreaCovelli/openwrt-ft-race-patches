@@ -289,7 +289,13 @@ expect_failure artifact-exists 'artifact directory already exists' \
 expect_failure artifact-in-workspace 'artifact directory must be outside' \
   run_kmod --fresh --patch "$patch_dir/good/400-fake.patch" --artifact-dir "$workspace/out" "$version" test/sub
 expect_failure sdk-pin 'but --sdk-sha256 requires' \
-  run_kmod --fresh --sdk-sha256 "$(printf 'd%.0s' {1..64})" --artifact-dir "$artifact_root/pin" "$version" test/sub
+  run_kmod --fresh --patch "$patch_dir/good/400-fake.patch" --sdk-sha256 "$(printf 'd%.0s' {1..64})" \
+  --artifact-dir "$artifact_root/pin" "$version" test/sub
+# Without --patch, the release's own patch directory is required.
+expect_failure default-patch-missing "no mac80211 patches for OpenWrt $version in patches/$version/subsys" \
+  run_kmod --fresh --artifact-dir "$artifact_root/default" "$version" test/sub
+expect_failure default-patch-found 'failed to download https://downloads.example.test/releases/25.12.5/' \
+  run_kmod --artifact-dir "$artifact_root/default" 25.12.5 test/sub
 expect_failure bad-target 'target must be' run_kmod "$version" test
 expect_failure bad-patch-name 'NNN-name.patch' \
   run_kmod --patch "$patch_dir/good/400-fake.patch" --patch "$tmp_root/feeds.bad" "$version" test/sub

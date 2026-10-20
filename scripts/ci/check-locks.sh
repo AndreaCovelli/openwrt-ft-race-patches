@@ -107,6 +107,20 @@ validate_extra_patch_dest() {
   esac
 }
 
+# Patches are refreshed against one backports version, so a tagged lock
+# takes its patches from patches/<release>/subsys and an untagged main lock
+# from patches/main/subsys.
+validate_patch_release_dir() {
+  local lock="$1"
+  local source="$2"
+  local var_name="$3"
+  local release_dir='main'
+
+  [[ -z "${OPENWRT_TAG:-}" ]] || release_dir="${OPENWRT_TAG#v}"
+  [[ "$source" == "patches/$release_dir/subsys/$(basename "$source")" ]] ||
+    die "$lock: $var_name must be in patches/$release_dir/subsys: $source"
+}
+
 validate_patch_checksum() {
   local lock="$1"
   local source="$2"
@@ -150,6 +164,7 @@ validate_extra_patches() {
   for i in "${!extra_patch_sources[@]}"; do
     [[ -f "${extra_patch_sources[$i]}" ]] ||
       die "$lock: EXTRA_PATCH_SOURCES[$i] does not exist: ${extra_patch_sources[$i]}"
+    validate_patch_release_dir "$lock" "${extra_patch_sources[$i]}" "EXTRA_PATCH_SOURCES[$i]"
     validate_extra_patch_dest "$lock" "${extra_patch_dests[$i]}"
     [[ "$(basename "${extra_patch_sources[$i]}")" == "$(basename "${extra_patch_dests[$i]}")" ]] ||
       die "$lock: EXTRA_PATCH_SOURCES[$i] and EXTRA_PATCH_DESTS[$i] basenames differ"
@@ -404,6 +419,7 @@ for lock in "${locks[@]}"; do
 
     [[ "$(basename "$PATCH_SOURCE")" == "$(basename "$PATCH_DEST")" ]] ||
       die "$lock: PATCH_SOURCE and PATCH_DEST basenames differ"
+    validate_patch_release_dir "$lock" "$PATCH_SOURCE" 'PATCH_SOURCE'
 
     validate_patch_checksum "$lock" "$PATCH_SOURCE" "$PATCH_SHA256" 'PATCH_SHA256'
     validate_extra_patches "$lock"

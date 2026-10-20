@@ -13,7 +13,6 @@ source "$SCRIPT_DIR/lib/imagebuilder.sh"
 # shellcheck source=scripts/lib/kmod.sh
 source "$SCRIPT_DIR/lib/kmod.sh"
 
-DEFAULT_PATCH='patches/subsys/400-mac80211-defer-ap-side-ft-key-upload.patch'
 PACKAGE='kmod-mac80211'
 
 usage() {
@@ -33,8 +32,9 @@ file name, file list, module metadata (vermagic, depends, name), and exported
 symbols. Only the module code differs.
 
 Options:
-  --patch FILE          mac80211 patch to apply. Repeatable. Default:
-                        $DEFAULT_PATCH
+  --patch FILE          mac80211 patch to apply. Repeatable. Default: every
+                        patch in patches/<openwrt-version>/subsys, which
+                        holds the patches refreshed for that release.
   --sdk-sha256 HEX      Require this SDK checksum in addition to the release
                         sha256sums entry.
   --workspace NAME      Build workspace under build/. Default:
@@ -183,7 +183,14 @@ MAKE_JOBS="${MAKE_JOBS:-$(nproc)}"
 
 require_cmd awk cmp comm cp curl date diff find git grep install jq make mktemp mv nproc patch readelf realpath sed sha256sum sort tar tee tr wc zstd
 
-((${#PATCH_ARGS[@]} > 0)) || PATCH_ARGS=("$REPO_ROOT/$DEFAULT_PATCH")
+if ((${#PATCH_ARGS[@]} == 0)); then
+  DEFAULT_PATCH_DIR="patches/$VERSION/subsys"
+  mapfile -t PATCH_ARGS < <(
+    find "$REPO_ROOT/$DEFAULT_PATCH_DIR" -mindepth 1 -maxdepth 1 -type f -name '*.patch' 2>/dev/null | LC_ALL=C sort
+  )
+  ((${#PATCH_ARGS[@]} > 0)) ||
+    die "no mac80211 patches for OpenWrt $VERSION in $DEFAULT_PATCH_DIR; refresh the patch for this release or pass --patch"
+fi
 PATCH_FILES=()
 declare -A PATCH_NAMES=()
 for patch_arg in "${PATCH_ARGS[@]}"; do

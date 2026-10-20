@@ -196,17 +196,25 @@ out_bad_server="$tmp_root/prepare-upgrade-bad-server.out"
 out_http_server="$tmp_root/prepare-upgrade-http-server.out"
 out_bad_build_script="$tmp_root/prepare-upgrade-bad-build-script.out"
 
+patch_source="$(awk -F"'" '/^PATCH_SOURCE=/ { print $2 }' locks/build-wr3000e.lock)"
+patch_name="$(basename "$patch_source")"
+[[ "$patch_source" == "patches/25.12.5/subsys/$patch_name" ]] ||
+  die "unexpected wr3000e PATCH_SOURCE: $patch_source"
+
 before_lock="$(sha256sum locks/build-wr3000e.lock | awk '{ print $1 }')"
 TEST_SSH_LOG="$tmp_root/dry-run-ssh.log"
 export TEST_SSH_LOG
 dry_run_output="$(
-  scripts/prepare-openwrt-upgrade.sh --dry-run router locks/build-wr3000e.lock -- --make-jobs 4
+  scripts/prepare-openwrt-upgrade.sh --dry-run router locks/build-wr3000e.lock -- --make-jobs 4 \
+    2>"$tmp_root/dry-run.err"
 )"
 unset TEST_SSH_LOG
 after_lock="$(sha256sum locks/build-wr3000e.lock | awk '{ print $1 }')"
 [[ "$before_lock" == "$after_lock" ]] || die 'dry run modified the selected lock'
 assert_contains "$dry_run_output" 'Selected release: 25.12.4 (r32933-4ccb782af7)'
 assert_contains "$dry_run_output" "Would update $repo_root/locks/build-wr3000e.lock"
+assert_contains "$dry_run_output" "PATCH_SOURCE: '$patch_source' -> 'patches/25.12.4/subsys/$patch_name'"
+assert_file_contains "$tmp_root/dry-run.err" "patches/25.12.4/subsys/$patch_name does not exist; refresh the mac80211 patch for 25.12.4 first"
 assert_contains "$dry_run_output" 'Build command:'
 assert_contains "$dry_run_output" '--no-strict-manifest'
 assert_contains "$dry_run_output" '--make-jobs'
@@ -218,7 +226,8 @@ assert_file_not_contains "$tmp_root/dry-run-ssh.log" 'apk list --installed'
 assert_file_not_contains "$tmp_root/dry-run-ssh.log" 'cat /etc/apk/world'
 
 custom_builder_output="$(
-  BUILD_SCRIPT=/tmp/custom-openwrt-build scripts/prepare-openwrt-upgrade.sh --dry-run router locks/build-wr3000e.lock
+  BUILD_SCRIPT=/tmp/custom-openwrt-build scripts/prepare-openwrt-upgrade.sh --dry-run router locks/build-wr3000e.lock \
+    2>"$tmp_root/custom-builder.err"
 )"
 assert_contains "$custom_builder_output" '/tmp/custom-openwrt-build'
 
@@ -249,9 +258,31 @@ sed \
   -e "s|CONFIG_FRAGMENT='devices/wr3000e/diffconfig'|CONFIG_FRAGMENT='.tmp-prepare-openwrt-upgrade-test/devices/wr3000e/diffconfig'|" \
   -e "s|WORLD_SOURCE='devices/wr3000e/apk-installed-and-world.txt'|WORLD_SOURCE='.tmp-prepare-openwrt-upgrade-test/devices/wr3000e/apk-installed-and-world.txt'|" \
   -e "s|REFERENCE_MANIFEST='devices/wr3000e/installed.manifest'|REFERENCE_MANIFEST='.tmp-prepare-openwrt-upgrade-test/devices/wr3000e/installed.manifest'|" \
+  -e "s|^PATCH_SOURCE='patches/|PATCH_SOURCE='.tmp-prepare-openwrt-upgrade-test/patches/|" \
   locks/build-wr3000e.lock >"$repo_tmp/build-wr3000e.lock"
 
+# A release change needs the mac80211 patch refreshed for that release.
+out_missing_patch="$tmp_root/prepare-upgrade-missing-patch.out"
+missing_patch_lock_before="$(sha256sum "$repo_tmp/build-wr3000e.lock" | awk '{ print $1 }')"
+TEST_SSH_LOG="$tmp_root/missing-patch-ssh.log"
+export TEST_SSH_LOG
+if TEST_ROUTER_RELEASE='25.12.4' scripts/prepare-openwrt-upgrade.sh --version 25.12.4 router \
+  .tmp-prepare-openwrt-upgrade-test/build-wr3000e.lock >"$out_missing_patch" 2>&1; then
+  die 'missing release patch unexpectedly succeeded'
+fi
+unset TEST_SSH_LOG
+assert_file_contains "$out_missing_patch" "refresh the mac80211 patch for 25.12.4 first"
+[[ "$(sha256sum "$repo_tmp/build-wr3000e.lock" | awk '{ print $1 }')" == "$missing_patch_lock_before" ]] ||
+  die 'missing release patch modified the selected lock'
+assert_file_not_contains "$tmp_root/missing-patch-ssh.log" 'cat /lib/apk/db/installed'
+
+mkdir -p "$repo_tmp/patches/25.12.4/subsys"
+printf 'mac80211 patch refreshed for 25.12.4\n' >"$repo_tmp/patches/25.12.4/subsys/$patch_name"
+new_patch_sha="$(sha256sum "$repo_tmp/patches/25.12.4/subsys/$patch_name" | awk '{ print $1 }')"
+
 TEST_ROUTER_RELEASE='25.12.4' scripts/prepare-openwrt-upgrade.sh --version 25.12.4 router .tmp-prepare-openwrt-upgrade-test/build-wr3000e.lock >"$out_up_to_date"
+assert_file_contains "$repo_tmp/build-wr3000e.lock" "PATCH_SOURCE='.tmp-prepare-openwrt-upgrade-test/patches/25.12.4/subsys/$patch_name'"
+assert_file_contains "$repo_tmp/build-wr3000e.lock" "PATCH_SHA256='$new_patch_sha'"
 assert_file_contains "$repo_tmp/build-wr3000e.lock" "OPENWRT_TAG='v25.12.4'"
 assert_file_contains "$repo_tmp/build-wr3000e.lock" "OPENWRT_REF='ba915c2ee711d047d5be8575c1e98699119429ab'"
 assert_file_contains "$repo_tmp/build-wr3000e.lock" "FEED_PACKAGES_REF='f91b06b3faff7ad3c8cbeb1ab39cef680d2f28ed'"
@@ -267,6 +298,7 @@ assert_file_contains "$TEST_PIN_LOG" "v25.12.4 $repo_root/.tmp-prepare-openwrt-u
 cp "$repo_tmp/build-wr3000e.lock" "$repo_tmp/build-wr3000e.lock.pinned"
 sed -i \
   -e "s|^OPENWRT_TAG='v25.12.4'|OPENWRT_TAG='v25.12.2'|" \
+  -e "s|/25[.]12[.]4/subsys/|/25.12.2/subsys/|" \
   -e "s|^OPENWRT_REF='ba915c2ee711d047d5be8575c1e98699119429ab'|OPENWRT_REF='0000000000000000000000000000000000000000'|" \
   "$repo_tmp/build-wr3000e.lock"
 out_pin_fail="$tmp_root/prepare-upgrade-pin-fail.out"
@@ -313,6 +345,7 @@ cp devices/wr3000p/diffconfig devices/wr3000p/installed.manifest \
   devices/wr3000p/apk-installed-and-world.txt "$repo_tmp/devices/wr3000p/"
 sed \
   -e "s|'devices/wr3000p/|'.tmp-prepare-openwrt-upgrade-test/devices/wr3000p/|" \
+  -e "s|^PATCH_SOURCE='patches/|PATCH_SOURCE='.tmp-prepare-openwrt-upgrade-test/patches/|" \
   locks/build-wr3000p.lock >"$repo_tmp/build-wr3000p.lock"
 p_tmp_lock_before="$(sha256sum "$repo_tmp/build-wr3000p.lock" | awk '{ print $1 }')"
 out_prebuilt_mismatch="$tmp_root/prepare-upgrade-prebuilt-mismatch.out"
@@ -331,6 +364,7 @@ EXPECTED_BUILDER_PATH="$PATH" TEST_CAPTURED_WORLD="$tmp_root/captured-p.world" \
     router .tmp-prepare-openwrt-upgrade-test/build-wr3000p.lock \
     -- --make-jobs 4 >"$tmp_root/prepare-upgrade-prebuilt-allowed.out" 2>&1
 assert_file_contains "$repo_tmp/build-wr3000p.lock" "OPENWRT_TAG='v25.12.4'"
+assert_file_contains "$repo_tmp/build-wr3000p.lock" "PATCH_SHA256='$new_patch_sha'"
 
 bad_lock="$repo_tmp/bad-path.lock"
 sed "s|REFERENCE_MANIFEST='devices/wr3000e/installed.manifest'|REFERENCE_MANIFEST='../outside.manifest'|" locks/build-wr3000e.lock >"$bad_lock"

@@ -35,7 +35,7 @@ PREBUILT_APKS=(
   'usteer|usteer-2026.10.18.25.12.5-r1.apk|https://api.github.com/repos/AndreaCovelli/usteer-apk-builder/releases/assets/653279763|6e7b172a5a36ce52c280a18c6074808904b1697f972c1c9d42f633f99b49e555'
 )
 
-PATCH_SOURCE='patches/subsys/400-mac80211-defer-ap-side-ft-key-upload.patch'
+PATCH_SOURCE='patches/25.12.5/subsys/400-mac80211-defer-ap-side-ft-key-upload.patch'
 PATCH_DEST='package/kernel/mac80211/patches/subsys/400-mac80211-defer-ap-side-ft-key-upload.patch'
 PATCH_SHA256='88a2dd27e51e0e23da36373d46dbdfaa0ec057b426da0e411ff0794b646e7774'
 
