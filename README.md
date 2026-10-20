@@ -266,8 +266,8 @@ sha256sum "$PATCH"
 
 What it fixes:
 - The mac80211 patch follows wireless-next v4 (source commit
-  `33d4e0eb234c721f655bf6386ca3faf62f09626d`). The 25.12.5 copy is adapted to
-  that release's backports 6.18.26 sources.
+  `33d4e0eb234c721f655bf6386ca3faf62f09626d`). The 25.12.5 and 25.12.6 copies
+  are adapted to those releases' backports 6.18.26 and 6.18.55 sources.
 - When automatic software fallback is allowed, `mac80211` accepts AP / AP_VLAN
   pre-`ASSOC` pairwise keys once a STA object exists and marks each accepted
   key for deferred hardware upload. Drivers advertising `SW_CRYPTO_CONTROL`
