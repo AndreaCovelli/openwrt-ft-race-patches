@@ -297,13 +297,57 @@ if grep -Fqx 'CONFIG_AUTOREMOVE=y' "$SDK_DIR/.config"; then
 fi
 cp -- "$SDK_DIR/.config" "$OUTPUT_DIR/metadata/sdk.config"
 
+# Print "package dependency..." for each package in the file PACKAGES, built
+# by the Makefile in DIR, from the IDEPEND_<package> list that packaging
+# checks. The SDK evaluates it with its config, which resolves dependencies
+# that the package metadata cannot list, such as those of kmod-b43.
+sdk_package_deps() {
+  local dir="$1"
+  local packages="$2"
+  local -a targets=()
+
+  mapfile -t targets < <(sed 's/^/var.IDEPEND_/' "$packages")
+  ((${#targets[@]} > 0)) || return 0
+  (
+    cd "$SDK_DIR"
+    make -s -r -C "$dir" TOPDIR="$SDK_DIR" "${targets[@]}" 2>>"$REPORT_DIR/package-deps.err"
+  ) | sed -n "s/^IDEPEND_\([^=]*\)='\(.*\)'\$/\1 \2/p"
+}
+
 make_args=(NO_DEPS=1 DL_DIR="$DL_DIR" CONFIG_BUILD_LOG=y)
 # Packaging checks each module's dependencies against the files its
-# dependency packages provide, so package the SDK kernel modules first.
-log "Packaging SDK kernel modules"
+# dependency packages provide, so package the SDK kernel modules that the
+# mac80211 packages depend on first. The release selects hundreds of kernel
+# modules; clearing the others' package symbols for this step only skips them
+# without changing the SDK config.
+PACKAGEINFO="$SDK_DIR/tmp/.packageinfo"
+[[ -s "$PACKAGEINFO" ]] || die "SDK package metadata is missing: $PACKAGEINFO"
+LINUX_MAKEFILE='package/kernel/linux/Makefile'
+MAC80211_MAKEFILE="$(kmod_package_source "$PACKAGEINFO" "$PACKAGE")" || exit 1
+kmod_selected_packages "$PACKAGEINFO" "$SDK_DIR/.config" "$LINUX_MAKEFILE" >"$REPORT_DIR/linux-selected.txt"
+kmod_selected_packages "$PACKAGEINFO" "$SDK_DIR/.config" "$MAC80211_MAKEFILE" >"$REPORT_DIR/mac80211-selected.txt"
+: >"$REPORT_DIR/package-deps.err"
+sdk_package_deps "${LINUX_MAKEFILE%/Makefile}" "$REPORT_DIR/linux-selected.txt" >"$REPORT_DIR/package-deps.txt" ||
+  die "SDK could not evaluate kernel module dependencies; see $REPORT_DIR/package-deps.err"
+sdk_package_deps "${MAC80211_MAKEFILE%/Makefile}" "$REPORT_DIR/mac80211-selected.txt" >>"$REPORT_DIR/package-deps.txt" ||
+  die "SDK could not evaluate mac80211 package dependencies; see $REPORT_DIR/package-deps.err"
+cut -d ' ' -f 1 "$REPORT_DIR/package-deps.txt" | LC_ALL=C sort |
+  cmp -s - <(LC_ALL=C sort "$REPORT_DIR/linux-selected.txt" "$REPORT_DIR/mac80211-selected.txt") ||
+  die "SDK did not report the dependencies of every selected package; see $REPORT_DIR/package-deps.err"
+kmod_dep_closure "$REPORT_DIR/package-deps.txt" "$REPORT_DIR/mac80211-selected.txt" >"$REPORT_DIR/mac80211-deps.txt"
+LC_ALL=C comm -12 "$REPORT_DIR/linux-selected.txt" "$REPORT_DIR/mac80211-deps.txt" \
+  >"$OUTPUT_DIR/metadata/sdk-kernel-modules.txt"
+mapfile -t skipped_kmods < <(LC_ALL=C comm -23 "$REPORT_DIR/linux-selected.txt" "$REPORT_DIR/mac80211-deps.txt")
+[[ -s "$OUTPUT_DIR/metadata/sdk-kernel-modules.txt" ]] ||
+  die "SDK config selects none of the kernel modules that mac80211 depends on"
+linux_args=()
+for kmod in "${skipped_kmods[@]}"; do
+  linux_args+=("CONFIG_PACKAGE_$kmod=")
+done
+log "Packaging $(wc -l <"$OUTPUT_DIR/metadata/sdk-kernel-modules.txt") SDK kernel modules that mac80211 depends on; skipping ${#skipped_kmods[@]}"
 (
   cd "$SDK_DIR"
-  make -j"$MAKE_JOBS" "${make_args[@]}" package/linux/compile
+  make -j"$MAKE_JOBS" "${make_args[@]}" "${linux_args[@]}" package/linux/compile
 )
 log "Compiling mac80211"
 (

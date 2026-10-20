@@ -151,6 +151,14 @@ Patched kmod-mac80211 for a stock release:
   SDK's base feed is checked out at the OpenWrt commit the SDK records, the
   patch is added to the mac80211 package, and the SDK compiles mac80211 with
   the release package configuration.
+- Before compiling, the SDK packages only the prebuilt kernel modules that the
+  selected mac80211 packages depend on, directly or indirectly; OpenWrt's
+  package dependency check needs them. The SDK evaluates each package's
+  dependency list with the release config, which includes dependencies that
+  the package metadata cannot list, such as `kmod-b43` on `kmod-ssb`. The
+  other kernel modules the release selects, about 860 of 900 on
+  `mediatek/filogic`, are skipped for that step only; the SDK `.config` is
+  unchanged.
 - The build turns off the SDK's `CONFIG_AUTOREMOVE`, so mac80211 source trees
   remain after compiling, and fails unless the patch is present in every
   prepared mac80211 source tree (one per build variant, such as ath10k
@@ -170,8 +178,9 @@ Patched kmod-mac80211 for a stock release:
   `openwrt-artifacts/openwrt-ft-kmod-mac80211-<version>-<target>-<subtarget>-<utc>/`
   directory (or `--artifact-dir <new-dir>`): the patched package with its
   official file name, the extracted `mac80211.ko`, `sha256sums.txt`,
-  `build-summary.txt`, the patches, the SDK `.config`, the release metadata,
-  and `logs/build.log`. The workspace is
+  `build-summary.txt`, the patches, the SDK `.config`, the packaged SDK kernel
+  modules in `metadata/sdk-kernel-modules.txt`, the release metadata, and
+  `logs/build.log`. The workspace is
   `build/openwrt-ft-kmod-<version>-<target>-<subtarget>`; rerun with
   `--fresh` to replace it. The SDK archive is cached in `cache/dl`.
 - The host needs the usual OpenWrt SDK build prerequisites plus `curl`, `jq`,

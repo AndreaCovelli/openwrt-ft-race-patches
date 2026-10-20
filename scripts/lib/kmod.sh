@@ -51,6 +51,59 @@ kmod_sdk_base_feed() {
   printf '%s %s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
 }
 
+# Print the Source-Makefile of PACKAGE from an OpenWrt tmp/.packageinfo.
+kmod_package_source() {
+  local packageinfo="$1"
+  local package="$2"
+  local source
+
+  source="$(awk -v pkg="$package" '
+    /^Source-Makefile: / { source = $2; next }
+    /^Package: / && $2 == pkg { print source; exit }
+  ' "$packageinfo")"
+  [[ -n "$source" ]] || kmod_die "SDK package metadata does not list $package" || return 1
+  printf '%s\n' "$source"
+}
+
+# Print the packages built by SOURCE_MAKEFILE that CONFIG selects, from an
+# OpenWrt tmp/.packageinfo.
+kmod_selected_packages() {
+  local packageinfo="$1"
+  local config="$2"
+  local source_makefile="$3"
+
+  awk -v src="$source_makefile" '
+    FNR == NR {
+      if (match($0, /^CONFIG_PACKAGE_[^=]+=[my]$/)) selected[substr($0, 16, RLENGTH - 17)] = 1
+      next
+    }
+    /^Source-Makefile: / { source = $2; next }
+    /^Package: / && source == src && ($2 in selected) { print $2 }
+  ' "$config" "$packageinfo" | LC_ALL=C sort -u
+}
+
+# Print every package that the packages in ROOTS depend on, directly or
+# through other packages. GRAPH has one "package dependency..." line per
+# package.
+kmod_dep_closure() {
+  local graph="$1"
+  local roots="$2"
+
+  awk '
+    FNR == NR { deps[$1] = $0; next }
+    { queue[++n] = $1 }
+    END {
+      for (i = 1; i <= n; i++) {
+        count = split(deps[queue[i]], list, " ")
+        for (j = 2; j <= count; j++) {
+          if (!(list[j] in seen)) { seen[list[j]] = 1; queue[++n] = list[j] }
+        }
+      }
+      for (pkg in seen) print pkg
+    }
+  ' "$graph" "$roots" | LC_ALL=C sort
+}
+
 # Print the strings of one ELF section, one per line. A missing section
 # prints nothing.
 kmod_elf_strings() {
