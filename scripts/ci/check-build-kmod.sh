@@ -175,27 +175,107 @@ done
 tar -xf "$file" -C "$dest"
 APK
 chmod +x "$sdk_tree/scripts/feeds" "$sdk_tree/staging_dir/host/bin/apk"
+# Package metadata as the SDK scans it, without the config, and per-package
+# Makefiles that report IDEPEND_<package> with the config, as the SDK does.
+# kmod-b43 depends on kmod-ssb only through a config symbol, so the metadata
+# does not list that dependency. The selected mac80211 packages need
+# kmod-crypto-aead, kmod-crypto-ccm, and kmod-ssb; kmod-crypto-gcm is needed
+# but not selected, and kmod-rt2800-usb, which needs kmod-usb-core, is not
+# selected.
+mkdir -p "$sdk_tree/tmp" "$sdk_tree/package/kernel/linux" "$sdk_tree/package/feeds/base/mac80211"
+cat >"$sdk_tree/tmp/.packageinfo" <<'PACKAGEINFO'
+Source-Makefile: package/kernel/linux/Makefile
+
+Package: kmod-crypto-aead
+Depends: @!SMALL_FLASH
+
+Package: kmod-crypto-ccm
+Depends: +kmod-crypto-aead
+
+Package: kmod-crypto-gcm
+Depends: +kmod-crypto-aead
+
+Package: kmod-hwmon-core
+
+Package: kmod-sound-core
+Depends: @AUDIO_SUPPORT +kmod-input-core
+
+Package: kmod-ssb
+Depends: @PCI_SUPPORT
+
+Package: kmod-usb-common
+
+Package: kmod-usb-core
+Depends: +kmod-usb-common
+
+Source-Makefile: package/feeds/base/mac80211/Makefile
+
+Package: kmod-cfg80211
+Depends: +kmod-crypto-aead +@DRIVER_11AC_SUPPORT
+
+Package: kmod-mac80211
+Depends: +kmod-cfg80211 +kmod-crypto-ccm +kmod-crypto-gcm +hostapd-common
+
+Package: kmod-b43
+Depends: @PCI_SUPPORT +kmod-mac80211
+
+Package: kmod-rt2800-usb
+Depends: @USB_SUPPORT +kmod-usb-core
+
+Source-Makefile: package/network/services/hostapd/Makefile
+
+Package: hostapd-common
+PACKAGEINFO
+cat >"$sdk_tree/package/var.mk" <<'VARMK'
+var.%:
+	@$(if $(filter undefined,$(origin $*)),echo '$* undefined' >&2,echo "$*='$($*)'")
+VARMK
+cat >"$sdk_tree/package/kernel/linux/Makefile" <<'LINUXMK'
+IDEPEND_kmod-crypto-aead :=
+IDEPEND_kmod-crypto-ccm := kmod-crypto-aead
+IDEPEND_kmod-crypto-gcm := kmod-crypto-aead
+IDEPEND_kmod-hwmon-core :=
+IDEPEND_kmod-sound-core := kmod-input-core
+IDEPEND_kmod-ssb :=
+IDEPEND_kmod-usb-common :=
+IDEPEND_kmod-usb-core := kmod-usb-common
+include $(TOPDIR)/package/var.mk
+LINUXMK
+cat >"$sdk_tree/package/feeds/base/mac80211/Makefile" <<'MAC80211MK'
+-include $(TOPDIR)/.config
+IDEPEND_kmod-cfg80211 := kmod-crypto-aead @DRIVER_11AC_SUPPORT
+IDEPEND_kmod-mac80211 := kmod-cfg80211 kmod-crypto-ccm kmod-crypto-gcm hostapd-common
+IDEPEND_kmod-b43 := kmod-mac80211 $(if $(CONFIG_PACKAGE_B43_USE_SSB),kmod-ssb)
+IDEPEND_kmod-rt2800-usb := kmod-usb-core
+include $(TOPDIR)/package/var.mk
+MAC80211MK
 cat >"$sdk_tree/Makefile" <<MAKEFILE
 PKG_DIR := bin/targets/test/sub/packages
-SRC_DIR := build_dir/target-test/linux-test_sub/backports-6.18.1
+SRC_DIR := build_dir/target-test/linux-test_sub/mac80211-regular/backports-6.18.1
+VARIANT_DIR := build_dir/target-test/linux-test_sub/mac80211-smallbuffers/backports-6.18.1
+LINUX_KMODS := kmod-crypto-aead kmod-crypto-ccm kmod-crypto-gcm kmod-hwmon-core kmod-sound-core kmod-ssb kmod-usb-common kmod-usb-core
+
+-include .config
 
 .PHONY: defconfig package/linux/compile package/mac80211/compile
 
 defconfig:
-	@printf 'CONFIG_PACKAGE_kmod-mac80211=m\n' >.config
+	@{ printf 'CONFIG_PACKAGE_%s\n' kmod-mac80211=m kmod-cfg80211=m kmod-b43=m B43_USE_SSB=y kmod-crypto-aead=y kmod-crypto-ccm=m kmod-hwmon-core=m kmod-sound-core=m kmod-ssb=m kmod-usb-common=m kmod-usb-core=m; grep -Fx '# CONFIG_AUTOREMOVE is not set' .config 2>/dev/null || printf 'CONFIG_AUTOREMOVE=y\n'; } >.config.new
+	@mv .config.new .config
 
 package/linux/compile:
 	@printf 'linux-compile NO_DEPS=%s\n' '\$(NO_DEPS)' >>make-calls.log
+	@printf '%s\n' \$(foreach kmod,\$(LINUX_KMODS),\$(if \$(CONFIG_PACKAGE_\$(kmod)),\$(kmod))) >linux-packaged.txt
 
 package/mac80211/compile:
 	@printf 'mac80211-compile NO_DEPS=%s\n' '\$(NO_DEPS)' >>make-calls.log
-	@rm -rf \$(SRC_DIR) pkg-root
-	@mkdir -p \$(SRC_DIR) pkg-root/lib/modules/6.12.1 \$(PKG_DIR)
-	@cp -a feeds/base/kernel/mac80211/src/. \$(SRC_DIR)/
-	@for p in feeds/base/kernel/mac80211/patches/subsys/*.patch; do patch -s -p1 -d \$(SRC_DIR) <"\$\$p"; done
+	@rm -rf \$(SRC_DIR) \$(VARIANT_DIR) pkg-root
+	@mkdir -p \$(SRC_DIR) \$(VARIANT_DIR) pkg-root/lib/modules/6.12.1 \$(PKG_DIR)
+	@for d in \$(SRC_DIR) \$(VARIANT_DIR); do cp -a feeds/base/kernel/mac80211/src/. \$\$d/; for p in feeds/base/kernel/mac80211/patches/subsys/*.patch; do patch -s -p1 -d \$\$d <"\$\$p"; done; done
 	@$cc_bin -c -o pkg-root/lib/modules/6.12.1/mac80211.ko \$(SRC_DIR)/net/mac80211/key.c
 	@tar -cf \$(PKG_DIR)/$package_file -C pkg-root .
 	@printf 'hwsim\n' >\$(PKG_DIR)/kmod-mac80211-hwsim-6.12.1.6.18.1-r1.apk
+	@if grep -Fqx 'CONFIG_AUTOREMOVE=y' .config; then rm -rf \$(SRC_DIR)/* \$(VARIANT_DIR)/*; fi
 MAKEFILE
 mkdir -p "$target_dir/$kmods_rel"
 tar --zstd -cf "$target_dir/$sdk_file" -C "$tmp_root/sdk-tree" openwrt-sdk
@@ -277,8 +357,17 @@ grep -Fq 'Comparing the patched package with the official package' "$artifact/lo
 [[ "$(cat "$workspace/sdk/feeds.conf")" == "src-git --root=package base https://git.example.test/openwrt.git^$openwrt_ref" ]] ||
   die 'SDK feeds.conf does not contain only the pinned base feed'
 grep -Fqx 'mac80211-compile NO_DEPS=1' "$workspace/sdk/make-calls.log" || die 'mac80211 was not compiled without dependencies'
+grep -Fqx '# CONFIG_AUTOREMOVE is not set' "$artifact/metadata/sdk.config" ||
+  die 'SDK config does not disable AUTOREMOVE'
 [[ "$(paste -sd ' ' "$workspace/sdk/make-calls.log")" == 'linux-compile NO_DEPS=1 mac80211-compile NO_DEPS=1' ]] ||
   die 'SDK kernel modules were not packaged before mac80211'
+expected_kmods='kmod-crypto-aead kmod-crypto-ccm kmod-ssb'
+[[ "$(paste -sd ' ' "$workspace/sdk/linux-packaged.txt")" == "$expected_kmods" ]] ||
+  die "SDK packaged the wrong kernel modules: $(paste -sd ' ' "$workspace/sdk/linux-packaged.txt")"
+[[ "$(paste -sd ' ' "$artifact/metadata/sdk-kernel-modules.txt")" == "$expected_kmods" ]] ||
+  die 'packaged SDK kernel modules were not recorded'
+grep -Fq 'Packaging 3 SDK kernel modules that mac80211 depends on; skipping 4' "$artifact/logs/build.log" ||
+  die 'build log does not report the packaged SDK kernel modules'
 ! cmp -s "$artifact/mac80211.ko" "$official_root/lib/modules/6.12.1/mac80211.ko" ||
   die 'published module is the official module'
 
