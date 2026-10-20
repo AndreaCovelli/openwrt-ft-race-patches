@@ -153,20 +153,18 @@ After preparation, review the changed lock and device baseline files:
 git diff -- <lock-file> devices
 ```
 
-Run the focused validation checks before relying on the updated inputs:
+Run the validation checks before relying on the updated inputs:
 
 ```sh
-bash -n scripts/*.sh scripts/**/*.sh locks/*.lock
-shellcheck --severity=warning -x scripts/*.sh scripts/**/*.sh
-shellcheck --severity=warning --shell=bash --exclude=SC2034 locks/*.lock
-scripts/ci/check-locks.sh
-scripts/ci/check-build-names.sh
-scripts/ci/check-prepare-openwrt-upgrade.sh
-scripts/ci/check-upgrade-router-image.sh
-scripts/ci/check-prebuilt-apks.sh
-scripts/ci/check-world-config.sh
-scripts/ci/check-ec2-cleanup.sh
+mise install
+mise run check:metadata
+mise run check:shell
 ```
+
+`check:metadata` validates the lock pins, including the per-release patch
+path, `PATCH_SHA256`, and the ImageBuilder pins, plus the artifact names and
+builder image reference. `check:shell` lints the scripts and lock files and
+runs every helper self-test under `scripts/ci/`.
 
 These checks do not replace the firmware build. They validate the repository
 inputs and helper scripts.

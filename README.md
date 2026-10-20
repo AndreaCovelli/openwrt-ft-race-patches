@@ -30,7 +30,8 @@ Development checks:
 - Run the complete local validation suite with `mise run check`.
 - Run an individual group with `mise run check:shell`,
   `mise run check:metadata`, or `mise run check:links`. The shell group also
-  lints `docker/Dockerfile.ec2` with hadolint.
+  lints `docker/Dockerfile.ec2` with hadolint and the GitHub Actions workflow
+  with actionlint.
 
 Build verification:
 - Builds fail by default if the generated package manifest differs from the

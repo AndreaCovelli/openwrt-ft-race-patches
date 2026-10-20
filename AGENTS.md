@@ -64,6 +64,7 @@ scripts/ci/check-ec2-cleanup.sh
 scripts/ci/check-ec2-fetch.sh
 scripts/ci/check-ec2-remote-build.sh
 hadolint docker/Dockerfile.ec2
+actionlint .github/workflows/ci.yml
 ```
 
 The default builder image lives only in `scripts/lib/builder-image.sh`; keep the
