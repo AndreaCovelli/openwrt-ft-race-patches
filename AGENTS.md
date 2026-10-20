@@ -55,6 +55,7 @@ scripts/ci/check-prebuilt-apks.sh
 scripts/ci/check-run-local-docker-build.sh
 scripts/ci/check-incremental-build.sh
 scripts/ci/check-imagebuilder.sh
+scripts/ci/check-build-kmod.sh
 scripts/ci/check-pin-imagebuilder.sh
 scripts/ci/check-world-config.sh
 scripts/ci/check-ec2-cleanup.sh
@@ -79,6 +80,11 @@ resources:
 ```
 
 Do not run those full build or EC2 commands unless the user asked for them.
+
+`./scripts/build-kmod.sh <openwrt-version> <target>/<subtarget>` downloads a
+release SDK, clones the OpenWrt base feed, and compiles mac80211. Treat it like
+a build: run `scripts/ci/check-build-kmod.sh` for changes to it, and run the
+real command only when asked.
 
 ## Shell Style
 
