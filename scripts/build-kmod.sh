@@ -8,6 +8,8 @@ REPO_ROOT="$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)"
 
 # shellcheck source=scripts/lib/build-name.sh
 source "$SCRIPT_DIR/lib/build-name.sh"
+# shellcheck source=scripts/lib/download.sh
+source "$SCRIPT_DIR/lib/download.sh"
 # shellcheck source=scripts/lib/imagebuilder.sh
 source "$SCRIPT_DIR/lib/imagebuilder.sh"
 # shellcheck source=scripts/lib/kmod.sh
@@ -74,50 +76,6 @@ abs_path() {
   else
     printf '%s/%s\n' "$PWD" "$1"
   fi
-}
-
-sha256_of() {
-  sha256sum "$1" | awk '{print $1}'
-}
-
-fetch() {
-  local url="$1"
-  local dest="$2"
-
-  curl -fsSL \
-    --proto '=https' \
-    --proto-redir '=https' \
-    --connect-timeout 10 \
-    --max-time 1800 \
-    --retry 3 \
-    --retry-connrefused \
-    -o "$dest" \
-    "$url" || die "failed to download $url"
-}
-
-# Download URL to DEST unless DEST already has the expected checksum.
-fetch_verified_file() {
-  local url="$1"
-  local dest="$2"
-  local expected="$3"
-  local tmp actual
-
-  if [[ -f "$dest" ]] && [[ "$(sha256_of "$dest")" == "$expected" ]]; then
-    return 0
-  fi
-
-  mkdir -p "$(dirname -- "$dest")"
-  tmp="$(mktemp "$dest.tmp.XXXXXXXX")"
-  if ! (fetch "$url" "$tmp"); then
-    rm -f -- "$tmp"
-    exit 1
-  fi
-  actual="$(sha256_of "$tmp")"
-  if [[ "$actual" != "$expected" ]]; then
-    rm -f -- "$tmp"
-    die "sha256 mismatch for $url: expected $expected got $actual"
-  fi
-  mv -f -- "$tmp" "$dest"
 }
 
 PATCH_ARGS=()
@@ -247,8 +205,8 @@ TARGET_URL="$BASE_URL/releases/$VERSION/targets/$TARGET/$SUBTARGET"
 log "Release: $VERSION $TARGET/$SUBTARGET"
 log "Workspace: $BUILD_ROOT"
 log "Reading release metadata: $TARGET_URL"
-fetch "$TARGET_URL/sha256sums" "$RELEASE_DIR/sha256sums"
-fetch "$TARGET_URL/profiles.json" "$RELEASE_DIR/profiles.json"
+download_https "$TARGET_URL/sha256sums" "$RELEASE_DIR/sha256sums" || exit 1
+download_https "$TARGET_URL/profiles.json" "$RELEASE_DIR/profiles.json" || exit 1
 
 profile_value() {
   jq -er "$1" "$RELEASE_DIR/profiles.json" || die "release profiles.json lacks $1"
@@ -284,9 +242,9 @@ OFFICIAL_FILE="$(basename -- "$OFFICIAL_PATH")"
 OFFICIAL_APK="$RELEASE_DIR/$OFFICIAL_FILE"
 
 log "Fetching official $PACKAGE package: $OFFICIAL_FILE"
-fetch_verified_file "$TARGET_URL/$OFFICIAL_PATH" "$OFFICIAL_APK" "$OFFICIAL_SHA256"
+download_verified_file "$TARGET_URL/$OFFICIAL_PATH" "$OFFICIAL_APK" "$OFFICIAL_SHA256" || exit 1
 log "Fetching OpenWrt SDK: $SDK_FILE"
-fetch_verified_file "$SDK_URL" "$DL_DIR/$SDK_FILE" "$SDK_SHA256"
+download_verified_file "$SDK_URL" "$DL_DIR/$SDK_FILE" "$SDK_SHA256" || exit 1
 
 log "Extracting OpenWrt SDK"
 mkdir -p "$SDK_DIR"
@@ -318,7 +276,7 @@ for patch_file in "${PATCH_FILES[@]}"; do
   log "Adding mac80211 patch: $patch_name"
   install -m 0644 "$patch_file" "$PATCH_DIR/$patch_name"
   cp -- "$patch_file" "$OUTPUT_DIR/metadata/$patch_name"
-  printf '%s\t%s\n' "$patch_name" "$(sha256_of "$patch_file")" >>"$OUTPUT_DIR/metadata/patches.tsv"
+  printf '%s\t%s\n' "$patch_name" "$(download_sha256 "$patch_file")" >>"$OUTPUT_DIR/metadata/patches.tsv"
 done
 
 # The SDK's Config-build.in carries the release package selection, so
@@ -437,12 +395,12 @@ sdk_sha256=${SDK_SHA256}
 kernel=${KERNEL_VERSION}-${KERNEL_RELEASE}-${KERNEL_VERMAGIC}
 vermagic=${vermagic}
 package=${OFFICIAL_FILE}
-patched_package_sha256=$(sha256_of "$PATCHED_APK")
+patched_package_sha256=$(download_sha256 "$PATCHED_APK")
 official_package_url=${TARGET_URL}/${OFFICIAL_PATH}
 official_package_sha256=${OFFICIAL_SHA256}
 module_path=/${MODULE_PATH}
-patched_module_sha256=$(sha256_of "$REPORT_DIR/patched/$MODULE_PATH")
-official_module_sha256=$(sha256_of "$REPORT_DIR/official/$MODULE_PATH")
+patched_module_sha256=$(download_sha256 "$REPORT_DIR/patched/$MODULE_PATH")
+official_module_sha256=$(download_sha256 "$REPORT_DIR/official/$MODULE_PATH")
 patches_tsv=metadata/patches.tsv
 new_imports=${new_imports}
 build_log=logs/build.log

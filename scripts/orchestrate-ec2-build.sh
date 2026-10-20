@@ -314,18 +314,6 @@ detect_ghcr_username() (
   fi
 )
 
-lock_prebuilt_apks() {
-  (
-    unset PREBUILT_APKS
-    # shellcheck source=/dev/null
-    source "$LOCK_FILE"
-    if declare -p PREBUILT_APKS >/dev/null 2>&1; then
-      local -n prebuilt_apks=PREBUILT_APKS
-      printf '%s\0' "${prebuilt_apks[@]}"
-    fi
-  )
-}
-
 # SSH and scp exit 255 for connection failures, unlike remote command
 # failures. Retry only those, so a brief network outage cannot end a long build.
 retry_on_ssh_failure() {
@@ -381,6 +369,18 @@ publish_artifact_staging() {
   [[ ! -d "$ARTIFACT_STAGING_DIR" ]] ||
     die "artifact destination appeared during the build; staged copy kept at $ARTIFACT_STAGING_DIR"
   ARTIFACT_STAGING_DIR=''
+}
+
+# Copy a remote output directory and, when present, its sibling reports
+# directory into the artifact staging directory.
+copy_remote_outputs() {
+  local remote_artifact_dir="$1"
+  local remote_report_dir="${remote_artifact_dir%/output}/reports"
+
+  copy_remote_dir_contents "$remote_artifact_dir" "$ARTIFACT_STAGING_DIR"
+  if retry_on_ssh_failure remote_dir_exists "$remote_report_dir" >/dev/null 2>&1; then
+    copy_remote_dir_contents "$remote_report_dir" "$ARTIFACT_STAGING_DIR/reports"
+  fi
 }
 
 log "Preparing remote workspace metadata"
@@ -560,7 +560,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mapfile -d '' -t LOCK_PREBUILT_APKS < <(lock_prebuilt_apks)
+mapfile -d '' -t LOCK_PREBUILT_APKS < <(prebuilt_apk_lock_entries "$LOCK_FILE")
 if ((${#LOCK_PREBUILT_APKS[@]} > 0)); then
   log "Downloading pinned prebuilt APKs before remote build"
   (
@@ -597,7 +597,7 @@ REMOTE
 fi
 
 "${SSH_CMD[@]}" "$SSH_TARGET" 'bash -s' -- \
-  "$(remote_shell_quote "$REMOTE_ROOT")" \
+  "$(remote_shell_quote "$REMOTE_ROOT_EXPANDED")" \
   "$(remote_shell_quote "$SESSION_NAME")" \
   "$(remote_shell_quote "$REMOTE_ARCHIVE")" <<'REMOTE'
 set -euo pipefail
@@ -605,11 +605,6 @@ set -euo pipefail
 remote_root="$1"
 session_name="$2"
 remote_archive="$3"
-
-case "$remote_root" in
-  "~") remote_root="$HOME" ;;
-  "~/"*) remote_root="$HOME/${remote_root#~/}" ;;
-esac
 
 repo_dir="$remote_root/runs/$session_name/repo"
 mkdir -p "$repo_dir"
@@ -629,7 +624,7 @@ remote_arg() {
 
 REMOTE_INFO="$(
   "${SSH_CMD[@]}" "$SSH_TARGET" 'bash -s' -- \
-    "$(remote_shell_quote "$REMOTE_ROOT")" \
+    "$(remote_shell_quote "$REMOTE_ROOT_EXPANDED")" \
     "$(remote_shell_quote "$SESSION_NAME")" \
     "$(remote_shell_quote "$TMUX_SESSION_NAME")" \
     "$(remote_shell_quote "$BUILDER_IMAGE")" \
@@ -668,11 +663,6 @@ builder_base_image="$(decode_arg "${11}")"
 ubuntu_snapshot="$(decode_arg "${12}")"
 builder_platform="${13}"
 build_method="$(decode_arg "${14}")"
-
-case "$remote_root" in
-  "~") remote_root="$HOME" ;;
-  "~/"*) remote_root="$HOME/${remote_root#~/}" ;;
-esac
 
 run_root="$remote_root/runs/$session_name"
 repo_dir="$run_root/repo"
@@ -839,7 +829,6 @@ if [[ -n "$FETCH_ARTIFACTS_DIR" ]]; then
   remote_status_file="$(printf '%s\n' "$REMOTE_INFO" | sed -n 's/^status_file=//p')"
   remote_log_file="$(printf '%s\n' "$REMOTE_INFO" | sed -n 's/^log_file=//p')"
   remote_tmux_session="$(printf '%s\n' "$REMOTE_INFO" | sed -n 's/^tmux_session=//p')"
-  remote_report_dir="${remote_artifact_dir%/output}/reports"
 
   [[ -n "$remote_artifact_dir" ]] || die "remote artifact directory was not reported"
   [[ -n "$remote_status_file" ]] || die "remote status file was not reported"
@@ -877,10 +866,7 @@ if [[ -n "$FETCH_ARTIFACTS_DIR" ]]; then
     '')
       if retry_on_ssh_failure remote_dir_exists "$remote_artifact_dir" >/dev/null 2>&1; then
         log "Remote build wrote artifacts but no status file was found; copying artifacts before failing"
-        copy_remote_dir_contents "$remote_artifact_dir" "$ARTIFACT_STAGING_DIR"
-        if retry_on_ssh_failure remote_dir_exists "$remote_report_dir" >/dev/null 2>&1; then
-          copy_remote_dir_contents "$remote_report_dir" "$ARTIFACT_STAGING_DIR/reports"
-        fi
+        copy_remote_outputs "$remote_artifact_dir"
       fi
       copy_remote_build_log "$remote_log_file" "$ARTIFACT_STAGING_DIR"
       publish_artifact_staging
@@ -894,10 +880,7 @@ if [[ -n "$FETCH_ARTIFACTS_DIR" ]]; then
     *)
       if retry_on_ssh_failure remote_dir_exists "$remote_artifact_dir" >/dev/null 2>&1; then
         log "Remote build failed with exit status $build_status; copying available artifacts to $FETCH_ARTIFACTS_DIR"
-        copy_remote_dir_contents "$remote_artifact_dir" "$ARTIFACT_STAGING_DIR"
-        if retry_on_ssh_failure remote_dir_exists "$remote_report_dir" >/dev/null 2>&1; then
-          copy_remote_dir_contents "$remote_report_dir" "$ARTIFACT_STAGING_DIR/reports"
-        fi
+        copy_remote_outputs "$remote_artifact_dir"
       fi
       copy_remote_build_log "$remote_log_file" "$ARTIFACT_STAGING_DIR"
       publish_artifact_staging
@@ -909,10 +892,7 @@ if [[ -n "$FETCH_ARTIFACTS_DIR" ]]; then
   esac
 
   log "Copying remote artifacts for $FETCH_ARTIFACTS_DIR"
-  copy_remote_dir_contents "$remote_artifact_dir" "$ARTIFACT_STAGING_DIR"
-  if retry_on_ssh_failure remote_dir_exists "$remote_report_dir" >/dev/null 2>&1; then
-    copy_remote_dir_contents "$remote_report_dir" "$ARTIFACT_STAGING_DIR/reports"
-  fi
+  copy_remote_outputs "$remote_artifact_dir"
   copy_remote_build_log "$remote_log_file" "$ARTIFACT_STAGING_DIR"
 
   [[ -f "$ARTIFACT_STAGING_DIR/sha256sums.txt" ]] ||

@@ -79,18 +79,6 @@ require_cmd() {
   done
 }
 
-lock_prebuilt_apks() {
-  (
-    unset PREBUILT_APKS
-    # shellcheck source=/dev/null
-    source "$LOCK_FILE"
-    if declare -p PREBUILT_APKS >/dev/null 2>&1; then
-      local -n prebuilt_apks=PREBUILT_APKS
-      printf '%s\0' "${prebuilt_apks[@]}"
-    fi
-  )
-}
-
 abs_repo_path() {
   local path="$1"
   if [[ "$path" = /* ]]; then
@@ -467,7 +455,7 @@ mkdir -p "$HOST_CACHE_DIR" "$WORKSPACE_DIR"
 if [[ "$USE_CCACHE" == '1' ]]; then
   mkdir -p "$HOST_CACHE_DIR/ccache"
 fi
-mapfile -d '' -t LOCK_PREBUILT_APKS < <(lock_prebuilt_apks)
+mapfile -d '' -t LOCK_PREBUILT_APKS < <(prebuilt_apk_lock_entries "$LOCK_FILE")
 if ((${#LOCK_PREBUILT_APKS[@]} > 0)); then
   log "Downloading pinned prebuilt APKs into local cache"
   (

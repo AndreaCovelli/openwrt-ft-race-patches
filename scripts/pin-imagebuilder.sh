@@ -6,6 +6,8 @@ umask 022
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)"
 
+# shellcheck source=scripts/lib/download.sh
+source "$SCRIPT_DIR/lib/download.sh"
 # shellcheck source=scripts/lib/imagebuilder.sh
 source "$SCRIPT_DIR/lib/imagebuilder.sh"
 
@@ -49,21 +51,6 @@ require_cmd() {
   done
 }
 
-fetch() {
-  local url="$1"
-  local dest="$2"
-
-  curl -fsSL \
-    --proto '=https' \
-    --proto-redir '=https' \
-    --connect-timeout 10 \
-    --max-time 300 \
-    --retry 3 \
-    --retry-connrefused \
-    -o "$dest" \
-    "$url" || die "failed to download $url"
-}
-
 DRY_RUN='0'
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
@@ -96,7 +83,7 @@ done
   exit 1
 }
 
-require_cmd awk curl cut date jq mktemp mv sha256sum sort
+require_cmd awk curl date jq mktemp mv sha256sum sort
 
 LOCK_FILE="${POSITIONAL[0]}"
 if [[ "$LOCK_FILE" != /* ]]; then
@@ -133,9 +120,9 @@ TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/openwrt-pin-imagebuilder.XXXXXXXX")"
 trap 'rm -rf -- "$TMP_DIR"' EXIT
 
 log "Reading release metadata: $TARGET_URL"
-fetch "$TARGET_URL/sha256sums" "$TMP_DIR/sha256sums"
-fetch "$TARGET_URL/profiles.json" "$TMP_DIR/profiles.json"
-fetch "$TARGET_URL/feeds.buildinfo" "$TMP_DIR/feeds.buildinfo"
+download_https "$TARGET_URL/sha256sums" "$TMP_DIR/sha256sums" 300 || exit 1
+download_https "$TARGET_URL/profiles.json" "$TMP_DIR/profiles.json" 300 || exit 1
+download_https "$TARGET_URL/feeds.buildinfo" "$TMP_DIR/feeds.buildinfo" 300 || exit 1
 
 release_archive() {
   local pattern="$1"
@@ -215,8 +202,8 @@ REPOSITORY_ENTRIES=()
 for i in "${!REPOSITORY_URLS[@]}"; do
   url="${REPOSITORY_URLS[$i]}"
   log "Hashing repository index: $url"
-  fetch "$url" "$TMP_DIR/index-$i.adb"
-  entry="$url|$(sha256sum "$TMP_DIR/index-$i.adb" | cut -d' ' -f1)"
+  download_https "$url" "$TMP_DIR/index-$i.adb" 300 || exit 1
+  entry="$url|$(download_sha256 "$TMP_DIR/index-$i.adb")"
   imagebuilder_parse_repository "$entry" parsed_url parsed_sha256 || exit 1
   REPOSITORY_ENTRIES+=("$entry")
 done
