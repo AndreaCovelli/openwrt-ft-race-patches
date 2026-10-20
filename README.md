@@ -388,9 +388,13 @@ Local Docker builds:
   selected image and supplies its immutable image ID automatically.
 
 EC2 orchestration:
-- `scripts/orchestrate-ec2-build.sh` uploads a fresh snapshot of this repo to the EC2 host, prepares a per-run remote workspace, builds `docker/Dockerfile.ec2`, and starts the image build in a detached `tmux` session.
+- `scripts/orchestrate-ec2-build.sh` uploads a fresh snapshot of this repo to
+  the EC2 host, prepares a per-run remote directory, and runs
+  `scripts/run-local-docker-build.sh` from that snapshot in a detached `tmux`
+  session. The builder options it accepts are passed through unchanged.
 - EC2 workspaces remain session-scoped and disposable: every remote run is a
-  full build and does not reuse a prior OpenWrt compiled tree.
+  `--fresh` full build in the session's workspace and does not reuse a prior
+  OpenWrt compiled tree.
 - `scripts/run-ec2-build.sh` provisions a temporary EC2 builder, creates a
   temporary SSH-only security group restricted to the current client public IP,
   runs the orchestrator through a temporary SSH config file, fetches artifacts,

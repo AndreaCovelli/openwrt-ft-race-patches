@@ -10,6 +10,8 @@ REPO_ROOT="$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)"
 
 # shellcheck source=scripts/lib/build-name.sh
 source "$SCRIPT_DIR/lib/build-name.sh"
+# shellcheck source=scripts/lib/build-wrapper.sh
+source "$SCRIPT_DIR/lib/build-wrapper.sh"
 # shellcheck source=scripts/lib/prebuilt-apks.sh
 source "$SCRIPT_DIR/lib/prebuilt-apks.sh"
 # shellcheck source=scripts/lib/builder-image.sh
@@ -60,8 +62,9 @@ Options:
 Notes:
   - <lock-file> must be inside this repo so it can be uploaded together with the rest
     of the build inputs.
-  - The build runs remotely inside tmux and inside the Docker image defined by
-    docker/Dockerfile.ec2.
+  - The remote host runs scripts/run-local-docker-build.sh from the uploaded
+    snapshot inside tmux, as a fresh build without ccache in a workspace
+    named after the session.
 EOF
 }
 
@@ -77,101 +80,26 @@ require_cmd() {
   done
 }
 
-abs_repo_path() {
-  local path="$1"
-  if [[ "$path" = /* ]]; then
-    printf '%s\n' "$path"
-  else
-    printf '%s/%s\n' "$REPO_ROOT" "$path"
-  fi
-}
-
 # Expanded on the remote host after SSH connects.
 # shellcheck disable=SC2088
 REMOTE_ROOT='~/openwrt-ft-builds'
-SESSION_NAME=''
-BUILDER_IMAGE="$DEFAULT_BUILDER_IMAGE"
-REBUILD_BUILDER_IMAGE='0'
-IMAGE_TAG='patch-fix-openwrt-builder'
-BUILDER_PLATFORM='linux/amd64'
-BUILDER_BASE_IMAGE=''
-UBUNTU_SNAPSHOT=''
-MAKE_JOBS=''
-DOWNLOAD_JOBS=''
-STRICT_MANIFEST='1'
-BUILD_METHOD=''
+build_wrapper_option_defaults
 INCLUDE_UNTRACKED='0'
 FETCH_ARTIFACTS_DIR=''
 INSTALL_PREREQS='auto'
 
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
+  build_wrapper_take_option "$@" || exit 1
+  if ((BUILD_WRAPPER_SHIFT > 0)); then
+    shift "$BUILD_WRAPPER_SHIFT"
+    continue
+  fi
   case "$1" in
     --remote-root)
       [[ $# -ge 2 ]] || die "--remote-root requires a value"
       REMOTE_ROOT="$2"
       shift 2
-      ;;
-    --session)
-      [[ $# -ge 2 ]] || die "--session requires a value"
-      SESSION_NAME="$2"
-      shift 2
-      ;;
-    --builder-image)
-      [[ $# -ge 2 ]] || die "--builder-image requires a value"
-      BUILDER_IMAGE="$2"
-      shift 2
-      ;;
-    --rebuild-builder-image)
-      REBUILD_BUILDER_IMAGE='1'
-      shift
-      ;;
-    --image-tag)
-      [[ $# -ge 2 ]] || die "--image-tag requires a value"
-      IMAGE_TAG="$2"
-      shift 2
-      ;;
-    --platform)
-      [[ $# -ge 2 ]] || die "--platform requires a value"
-      BUILDER_PLATFORM="$2"
-      shift 2
-      ;;
-    --builder-base-image)
-      [[ $# -ge 2 ]] || die "--builder-base-image requires a value"
-      BUILDER_BASE_IMAGE="$2"
-      shift 2
-      ;;
-    --ubuntu-snapshot)
-      [[ $# -ge 2 ]] || die "--ubuntu-snapshot requires a value"
-      UBUNTU_SNAPSHOT="$2"
-      shift 2
-      ;;
-    --make-jobs)
-      [[ $# -ge 2 ]] || die "--make-jobs requires a value"
-      MAKE_JOBS="$2"
-      shift 2
-      ;;
-    --download-jobs)
-      [[ $# -ge 2 ]] || die "--download-jobs requires a value"
-      DOWNLOAD_JOBS="$2"
-      shift 2
-      ;;
-    --strict-manifest)
-      STRICT_MANIFEST='1'
-      shift
-      ;;
-    --build-method)
-      [[ $# -ge 2 ]] || die "--build-method requires a value"
-      case "$2" in
-        source|imagebuilder) ;;
-        *) die "--build-method must be source or imagebuilder" ;;
-      esac
-      BUILD_METHOD="$2"
-      shift 2
-      ;;
-    --no-strict-manifest)
-      STRICT_MANIFEST='0'
-      shift
       ;;
     --include-untracked)
       INCLUDE_UNTRACKED='1'
@@ -217,7 +145,6 @@ done
 }
 
 SSH_TARGET="${POSITIONAL[0]}"
-LOCK_FILE="$(abs_repo_path "${POSITIONAL[1]}")"
 
 require_cmd awk bash curl date dirname git mkdir mktemp mv scp sed sha256sum ssh tar
 
@@ -229,44 +156,19 @@ if [[ -n "${SSH_CONFIG_FILE:-}" ]]; then
   SCP_CMD+=(-F "$SSH_CONFIG_FILE")
 fi
 
-[[ -f "$LOCK_FILE" ]] || die "lock file not found: $LOCK_FILE"
-case "$LOCK_FILE" in
-  "$REPO_ROOT"/*) ;;
-  *)
-    die "lock file must live inside the repo: $LOCK_FILE"
-    ;;
-esac
-
-LOCK_FILE_REL="${LOCK_FILE#"$REPO_ROOT"/}"
+build_wrapper_resolve_lock "$REPO_ROOT" "${POSITIONAL[1]}" LOCK_FILE LOCK_FILE_REL || exit 1
+BUILDER_IMAGE="${BUILDER_IMAGE:-$DEFAULT_BUILDER_IMAGE}"
 
 if [[ -z "$SESSION_NAME" ]]; then
   SESSION_NAME="$(openwrt_default_build_name_from_lock "$LOCK_FILE")"
 fi
 TMUX_SESSION_NAME="${SESSION_NAME//./_}"
+build_wrapper_check_name session "$SESSION_NAME" || exit 1
 
-case "$SESSION_NAME" in
-  *[!A-Za-z0-9._-]*)
-    die "session name contains unsupported characters: $SESSION_NAME"
-    ;;
-esac
-
-case "$STRICT_MANIFEST" in
-  0|1) ;;
-  *)
-    die "strict manifest value must be 0 or 1"
-    ;;
-esac
-
-[[ -n "$BUILDER_PLATFORM" ]] || die "--platform must not be empty"
-[[ -n "$BUILDER_IMAGE" ]] || die "--builder-image must not be empty"
 if [[ -n "$FETCH_ARTIFACTS_DIR" ]]; then
   [[ ! -e "$FETCH_ARTIFACTS_DIR" && ! -L "$FETCH_ARTIFACTS_DIR" ]] ||
     die "artifact directory already exists: $FETCH_ARTIFACTS_DIR"
 fi
-case "$REBUILD_BUILDER_IMAGE" in
-  0|1) ;;
-  *) die "rebuild builder image value must be 0 or 1" ;;
-esac
 
 log() {
   printf '[%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*"
@@ -355,19 +257,12 @@ copy_remote_build_log() {
 ARTIFACT_STAGING_DIR=''
 
 create_artifact_staging() {
-  local parent
-
-  parent="$(dirname -- "$FETCH_ARTIFACTS_DIR")"
-  mkdir -p -- "$parent"
-  ARTIFACT_STAGING_DIR="$(mktemp -d "$parent/.openwrt-ft-artifacts.XXXXXXXX")"
+  ARTIFACT_STAGING_DIR="$(build_wrapper_create_staging "$FETCH_ARTIFACTS_DIR")" || exit 1
 }
 
-# -T prevents nesting into an existing directory; --no-clobber also protects a
-# destination created while the build was running. A skipped move exits zero.
+# On failure the cleanup trap reports the kept staging directory.
 publish_artifact_staging() {
-  mv -T --no-clobber -- "$ARTIFACT_STAGING_DIR" "$FETCH_ARTIFACTS_DIR"
-  [[ ! -d "$ARTIFACT_STAGING_DIR" ]] ||
-    die "artifact destination appeared during the build; staged copy kept at $ARTIFACT_STAGING_DIR"
+  build_wrapper_publish_artifacts "$ARTIFACT_STAGING_DIR" "$FETCH_ARTIFACTS_DIR" || exit 1
   ARTIFACT_STAGING_DIR=''
 }
 
@@ -613,196 +508,80 @@ rm -f "$remote_archive"
 REMOTE
 
 log "Creating remote tmux build launcher"
-REMOTE_EMPTY_ARG='__openwrt_ft_empty_arg__'
-remote_arg() {
-  if [[ -n "$1" ]]; then
-    printf '%s\n' "$1"
-  else
-    printf '%s\n' "$REMOTE_EMPTY_ARG"
-  fi
-}
+# The remote host runs the local Docker wrapper on the uploaded snapshot. Each
+# EC2 run is a disposable full build in its own workspace, without ccache.
+remote_build_args=(
+  --session "$SESSION_NAME"
+  --workspace "$SESSION_NAME"
+  --cache-dir "$REMOTE_CACHE_DIR"
+  --fresh
+  --no-ccache
+)
+build_wrapper_option_args remote_build_args
+remote_build_args+=("$LOCK_FILE_REL")
+remote_build_args_quoted=()
+for arg in "${remote_build_args[@]}"; do
+  remote_build_args_quoted+=("$(remote_shell_quote "$arg")")
+done
 
 REMOTE_INFO="$(
   "${SSH_CMD[@]}" "$SSH_TARGET" 'bash -s' -- \
     "$(remote_shell_quote "$REMOTE_ROOT_EXPANDED")" \
     "$(remote_shell_quote "$SESSION_NAME")" \
     "$(remote_shell_quote "$TMUX_SESSION_NAME")" \
-    "$(remote_shell_quote "$BUILDER_IMAGE")" \
-    "$(remote_shell_quote "$REBUILD_BUILDER_IMAGE")" \
-    "$(remote_shell_quote "$IMAGE_TAG")" \
-    "$(remote_shell_quote "$LOCK_FILE_REL")" \
-    "$(remote_shell_quote "$(remote_arg "$MAKE_JOBS")")" \
-    "$(remote_shell_quote "$(remote_arg "$DOWNLOAD_JOBS")")" \
-    "$(remote_shell_quote "$STRICT_MANIFEST")" \
-    "$(remote_shell_quote "$(remote_arg "$BUILDER_BASE_IMAGE")")" \
-    "$(remote_shell_quote "$(remote_arg "$UBUNTU_SNAPSHOT")")" \
-    "$(remote_shell_quote "$BUILDER_PLATFORM")" \
-    "$(remote_shell_quote "$(remote_arg "$BUILD_METHOD")")" <<'REMOTE'
+    "${remote_build_args_quoted[@]}" <<'REMOTE'
 set -euo pipefail
-
-empty_arg='__openwrt_ft_empty_arg__'
-decode_arg() {
-  if [[ "${1-}" == "$empty_arg" ]]; then
-    printf ''
-  else
-    printf '%s' "${1-}"
-  fi
-}
 
 remote_root="$1"
 session_name="$2"
 tmux_session_name="$3"
-builder_image="$4"
-rebuild_builder_image="$5"
-image_tag="$6"
-lock_file_rel="$7"
-make_jobs="$(decode_arg "$8")"
-download_jobs="$(decode_arg "$9")"
-strict_manifest="${10}"
-builder_base_image="$(decode_arg "${11}")"
-ubuntu_snapshot="$(decode_arg "${12}")"
-builder_platform="${13}"
-build_method="$(decode_arg "${14}")"
+shift 3
 
 run_root="$remote_root/runs/$session_name"
 repo_dir="$run_root/repo"
-cache_dir="$remote_root/cache"
-log_dir="$remote_root/logs"
-log_file="$log_dir/$session_name.log"
+log_file="$remote_root/logs/$session_name.log"
 launcher="$run_root/run-build.sh"
 status_file="$run_root/build.exit"
 docker_mode="$(sed -n '4p' "$run_root/.orchestrator-state")"
 
-repo_dir_q="$(printf '%q' "$repo_dir")"
-cache_dir_q="$(printf '%q' "$cache_dir")"
-log_file_q="$(printf '%q' "$log_file")"
-status_file_q="$(printf '%q' "$status_file")"
-builder_image_q="$(printf '%q' "$builder_image")"
-rebuild_builder_image_q="$(printf '%q' "$rebuild_builder_image")"
-image_tag_q="$(printf '%q' "$image_tag")"
-lock_file_q="$(printf '%q' "$lock_file_rel")"
-session_q="$(printf '%q' "$session_name")"
-make_jobs_q="$(printf '%q' "$make_jobs")"
-download_jobs_q="$(printf '%q' "$download_jobs")"
-strict_manifest_q="$(printf '%q' "$strict_manifest")"
-builder_base_image_q="$(printf '%q' "$builder_base_image")"
-ubuntu_snapshot_q="$(printf '%q' "$ubuntu_snapshot")"
-builder_platform_q="$(printf '%q' "$builder_platform")"
-build_method_q="$(printf '%q' "$build_method")"
-docker_mode_q="$(printf '%q' "$docker_mode")"
-
-cat >"$launcher" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-
-repo_dir=$repo_dir_q
-cache_dir=$cache_dir_q
-log_file=$log_file_q
-status_file=$status_file_q
-builder_image=$builder_image_q
-rebuild_builder_image=$rebuild_builder_image_q
-image_tag=$image_tag_q
-lock_file=$lock_file_q
-build_id=$session_q
-make_jobs=$make_jobs_q
-download_jobs=$download_jobs_q
-strict_manifest=$strict_manifest_q
-builder_base_image=$builder_base_image_q
-ubuntu_snapshot=$ubuntu_snapshot_q
-builder_platform=$builder_platform_q
-build_method=$build_method_q
-docker_mode=$docker_mode_q
-
-case "\$docker_mode" in
-  "docker")
-    docker_cmd=(docker)
+case "$docker_mode" in
+  'docker')
+    docker_bin='docker'
     ;;
-  "sudo docker")
-    docker_cmd=(sudo docker)
+  'sudo docker')
+    # run-local-docker-build.sh takes one Docker command.
+    docker_bin="$run_root/docker"
+    printf '#!/usr/bin/env bash\nexec sudo docker "$@"\n' >"$docker_bin"
+    chmod +x "$docker_bin"
     ;;
   *)
-    printf 'error: unsupported docker mode: %s\n' "\$docker_mode" >&2
+    printf 'error: unsupported docker mode: %s\n' "$docker_mode" >&2
     exit 1
     ;;
 esac
 
-if "\${docker_cmd[@]}" buildx version >/dev/null 2>&1; then
-  docker_build_cmd=("\${docker_cmd[@]}" buildx build --load)
-else
-  docker_build_cmd=("\${docker_cmd[@]}" build)
-fi
-
-docker_env=(-e CACHE_ROOT=/cache -e BUILD_ID="\$build_id" -e BUILDER_PLATFORM="\$builder_platform")
-if [[ -n "\$make_jobs" ]]; then
-  docker_env+=(-e MAKE_JOBS="\$make_jobs")
-fi
-if [[ -n "\$download_jobs" ]]; then
-  docker_env+=(-e DOWNLOAD_JOBS="\$download_jobs")
-fi
-docker_env+=(-e STRICT_MANIFEST="\$strict_manifest")
-if [[ -n "\$build_method" ]]; then
-  docker_env+=(-e BUILD_METHOD="\$build_method")
-fi
-
-docker_build_args=()
-docker_platform_args=()
-if [[ -n "\$builder_platform" ]]; then
-  docker_platform_args+=(--platform "\$builder_platform")
-fi
-if [[ -n "\$builder_base_image" ]]; then
-  docker_build_args+=(--build-arg "BUILDER_BASE_IMAGE=\$builder_base_image")
-fi
-if [[ -n "\$ubuntu_snapshot" ]]; then
-  docker_build_args+=(--build-arg "UBUNTU_SNAPSHOT=\$ubuntu_snapshot")
-fi
+{
+  printf '#!/usr/bin/env bash\n'
+  printf 'set -euo pipefail\n\n'
+  printf 'repo_dir=%q\n' "$repo_dir"
+  printf 'log_file=%q\n' "$log_file"
+  printf 'status_file=%q\n' "$status_file"
+  printf 'docker_bin=%q\n' "$docker_bin"
+  printf 'build_args=('
+  printf ' %q' "$@"
+  printf ' )\n'
+  cat <<'LAUNCHER'
 
 set +e
 (
-  set -euo pipefail
-  cd "\$repo_dir"
-  case "\$rebuild_builder_image" in
-    0)
-      image_tag="\$builder_image"
-      printf '[%s] pulling docker image %s\n' "\$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "\$image_tag"
-      "\${docker_cmd[@]}" pull "\$image_tag"
-      ;;
-    1)
-      printf '[%s] building docker image %s\n' "\$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "\$image_tag"
-      "\${docker_build_cmd[@]}" "\${docker_platform_args[@]}" "\${docker_build_args[@]}" -f docker/Dockerfile.ec2 -t "\$image_tag" .
-      ;;
-    *)
-      printf 'error: unsupported rebuild_builder_image value: %s\n' "\$rebuild_builder_image" >&2
-      exit 1
-      ;;
-  esac
-  builder_id="\$("\${docker_cmd[@]}" image inspect --format '{{.Id}}' "\$image_tag")"
-  if [[ -z "\$builder_id" ]]; then
-    printf 'error: failed to inspect builder image ID: %s\n' "\$image_tag" >&2
-    exit 1
-  fi
-  docker_env+=(
-    -e BUILDER_ID="\$builder_id"
-    -e WORKSPACE_ID="\$build_id"
-    -e WORKSPACE_PATH=/build
-    -e FRESH=1
-  )
-  # A fixed workspace path keeps compiler command lines identical.
-  mkdir -p "\$repo_dir/build/\$build_id"
-  printf '[%s] starting container build for %s\n' "\$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "\$lock_file"
-  "\${docker_cmd[@]}" run --rm \\
-    "\${docker_platform_args[@]}" \\
-    "\${docker_env[@]}" \\
-    -v "\$repo_dir:/workspace" \\
-    -v "\$repo_dir/build/\$build_id:/build" \\
-    -v "\$cache_dir:/cache" \\
-    -w /workspace \\
-    "\$image_tag" \\
-    ./scripts/build-image.sh "\$lock_file"
-) 2>&1 | tee "\$log_file"
-status=\${PIPESTATUS[0]}
-printf '%s\n' "\$status" >"\$status_file"
-exit "\$status"
-EOF
+  cd "$repo_dir"
+  OPENWRT_DOCKER_BIN="$docker_bin" ./scripts/run-local-docker-build.sh "${build_args[@]}"
+) 2>&1 | tee "$log_file"
+status=${PIPESTATUS[0]}
+printf '%s\n' "$status" >"$status_file"
+exit "$status"
+LAUNCHER
+} >"$launcher"
 
 chmod +x "$launcher"
 tmux new-session -d -s "$tmux_session_name" "bash '$launcher'"
@@ -895,13 +674,8 @@ if [[ -n "$FETCH_ARTIFACTS_DIR" ]]; then
   copy_remote_outputs "$remote_artifact_dir"
   copy_remote_build_log "$remote_log_file" "$ARTIFACT_STAGING_DIR"
 
-  [[ -f "$ARTIFACT_STAGING_DIR/sha256sums.txt" ]] ||
-    die "artifact checksum file not found in remote build output"
   log "Verifying copied artifact checksums"
-  (
-    cd "$ARTIFACT_STAGING_DIR"
-    sha256sum -c sha256sums.txt
-  )
+  build_wrapper_verify_artifacts "$ARTIFACT_STAGING_DIR" || exit 1
   publish_artifact_staging
   log "Artifacts and logs copied to $FETCH_ARTIFACTS_DIR"
 fi
