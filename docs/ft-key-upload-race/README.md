@@ -86,128 +86,275 @@ The important station milestones are:
 - ASSOC: mac80211 considers the STA associated and the driver should be ready
   for the normal per-station key upload path.
 
-## Flowchart
+## Diagrams
+
+The three diagrams answer different questions and are meant to be read
+together:
+
+- the flowchart shows every decision `ieee80211_add_key()` makes for one key
+  request, including the hardware-upload helper, and the value it returns;
+- the sequence diagram shows the order of events across hostapd, nl80211,
+  mac80211, and the driver during one FT roam, before and after the patch;
+- the state machine follows one pairwise key from the request until it is
+  freed, including the paths that do not occur during a normal roam.
+
+They describe the stable patch in `patches/<release>/subsys/`. The `main` copy
+also exempts Enhanced Privacy Protection (EPP) peers from the ASSOC gate, as
+newer kernels do; the diagrams leave that case out.
+
+### Flowchart: one key request
 
 ```mermaid
 flowchart TD
-    REQUEST["hostapd requests pairwise key install through nl80211"]
-    LOOKUP{"Does mac80211 have a STA entry?"}
-    ASSOC{"Is WLAN_STA_ASSOC set?"}
-    APPAIR{"Is this an AP or AP_VLAN pairwise key?"}
-    SWCTRL{"Does the driver control software crypto?"}
-    REJECT["Keep existing gate: reject with -ENOENT"]
-    STORE["Patched behavior: accept and store key in mac80211"]
-    SKIP_HW["Skip initial hardware upload while STA is not associated"]
-    ASSOC_EVENT["Driver AUTH-to-ASSOC transition succeeds and WLAN_STA_ASSOC is set"]
-    REFRESH["Refresh RX_MGMT and SPP_AMSDU key flags and clear the deferred marker"]
-    UPLOAD["Retry ieee80211_key_enable_hw_accel()"]
-    DRIVER["Driver receives set_key() after its state transition"]
-    SOFTWARE["Keep using the normal software fallback if upload fails"]
-    DONE["Roam can complete without pre-ASSOC key rejection"]
+    REQUEST["Userspace installs a key for a peer address: NL80211_CMD_NEW_KEY reaches ieee80211_add_key()"]
+    LOOKUP{"sta_info_get_bss() finds a STA entry?"}
+    ASSOC{"WLAN_STA_ASSOC set?"}
+    PAIRWISE{"Pairwise key?"}
+    IFTYPE{"AP or AP_VLAN interface?"}
+    SWCTRL{"Driver advertises SW_CRYPTO_CONTROL?"}
+    ENOENT["Free the key and return -ENOENT: hostapd logs key addition failed"]
+    MARK["Mark this key KEY_FLAG_DEFERRED_HW_UPLOAD"]
+    RXMGMT["Set RX_MGMT only if WLAN_STA_MFP is already set"]
+    CIPHER{"ieee80211_key_link(): same cipher as the STA's other PTK slots?"}
+    EOPNOTSUPP["Free the key and return -EOPNOTSUPP"]
+    IDENTICAL{"Identical to the key already in this slot?"}
+    KRACK["Keep the installed key and return 0 (key reinstallation protection)"]
+    SPP["Set SPP_AMSDU only if sta.spp_amsdu is already set"]
+    OLD{"ieee80211_key_replace(): replaces a key in the same PTK slot?"}
+    OLDHW{"Old key uploaded to hardware?"}
+    DISABLE["Remove the old key from hardware"]
+    OLDSW["Skip hardware for the new key: existing rekey behavior"]
+
+    subgraph HWACCEL["ieee80211_key_enable_hw_accel()"]
+        DEFERRED{"KEY_FLAG_DEFERRED_HW_UPLOAD set?"}
+        READY{"Driver has set_key() and the STA is uploaded to it?"}
+        SETKEY{"drv_set_key() result"}
+        UPLOADED["Set KEY_FLAG_UPLOADED_TO_HARDWARE"]
+        SWCIPHER{"Cipher that mac80211 can do in software?"}
+        RET1{"set_key() returned 1?"}
+        SWCTRL2{"Driver advertises SW_CRYPTO_CONTROL?"}
+        HWOK["Return 0: hardware crypto"]
+        SWOK["Return 0: software crypto"]
+        EINVAL["Return -EINVAL"]
+    end
+
+    FAIL["Free the new key and return -EINVAL"]
+    PUBLISH["Publish the key in sta->ptk[] and select it for TX unless NO_AUTO_TX"]
+    RESULT{"Key still marked deferred?"}
+    WAIT["Return 0: software crypto until the AUTH-to-ASSOC upload"]
+    DONE["Return 0: key installed"]
 
     REQUEST --> LOOKUP
-    LOOKUP -->|"no"| REJECT
+    LOOKUP -->|"no, e.g. FT over DS without an unassociated driver STA"| ENOENT
     LOOKUP -->|"yes"| ASSOC
-    ASSOC -->|"yes"| DRIVER
-    ASSOC -->|"no"| APPAIR
-    APPAIR -->|"no"| REJECT
-    APPAIR -->|"yes"| SWCTRL
-    SWCTRL -->|"yes"| REJECT
-    SWCTRL -->|"no"| STORE
-    STORE --> SKIP_HW
-    SKIP_HW --> ASSOC_EVENT
-    ASSOC_EVENT --> REFRESH
-    REFRESH --> UPLOAD
-    UPLOAD -->|"success"| DRIVER
-    UPLOAD -->|"unsupported or failed"| SOFTWARE
-    DRIVER --> DONE
-    SOFTWARE --> DONE
+    ASSOC -->|"yes: existing path"| RXMGMT
+    ASSOC -->|"no"| PAIRWISE
+    PAIRWISE -->|"no"| ENOENT
+    PAIRWISE -->|"yes"| IFTYPE
+    IFTYPE -->|"no"| ENOENT
+    IFTYPE -->|"yes"| SWCTRL
+    SWCTRL -->|"yes: only set_key() may permit software crypto"| ENOENT
+    SWCTRL -->|"no"| MARK
+    MARK --> RXMGMT
+    RXMGMT --> CIPHER
+    CIPHER -->|"no"| EOPNOTSUPP
+    CIPHER -->|"yes"| IDENTICAL
+    IDENTICAL -->|"yes"| KRACK
+    IDENTICAL -->|"no"| SPP
+    SPP --> OLD
+    OLD -->|"no"| DEFERRED
+    OLD -->|"yes"| OLDHW
+    OLDHW -->|"yes"| DISABLE
+    OLDHW -->|"no"| OLDSW
+    DISABLE --> DEFERRED
+    OLDSW --> PUBLISH
+    DEFERRED -->|"yes: skip the driver, ret stays -EOPNOTSUPP"| SWCIPHER
+    DEFERRED -->|"no"| READY
+    READY -->|"no"| SWCIPHER
+    READY -->|"yes"| SETKEY
+    SETKEY -->|"0"| UPLOADED
+    SETKEY -->|"1, -EOPNOTSUPP, -ENOSPC, or another error"| SWCIPHER
+    UPLOADED --> HWOK
+    SWCIPHER -->|"no"| EINVAL
+    SWCIPHER -->|"yes"| RET1
+    RET1 -->|"yes"| SWOK
+    RET1 -->|"no"| SWCTRL2
+    SWCTRL2 -->|"yes, never for a deferred key"| EINVAL
+    SWCTRL2 -->|"no"| SWOK
+    HWOK --> PUBLISH
+    SWOK --> PUBLISH
+    EINVAL --> FAIL
+    PUBLISH --> RESULT
+    RESULT -->|"yes"| WAIT
+    RESULT -->|"no"| DONE
 ```
 
-## Sequence diagram
+A deferred key never reaches `set_key()` here, so it can only be stored with a
+cipher that mac80211 implements in software. A driver-only cipher that used to
+fail with `-ENOENT` before ASSOC now fails with `-EINVAL`.
+
+### Sequence diagram: one FT roam
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor STA as Roaming STA
-    participant H as hostapd
+    participant H as hostapd (target AP)
     participant NL as nl80211/cfg80211
     participant CFG as mac80211 cfg.c
     participant KEY as mac80211 key.c
     participant SI as mac80211 sta_info.c
     participant DRV as driver/hardware
 
-    STA->>H: 802.11r FT roam starts
-    H->>NL: Install pairwise PTK for STA
+    STA->>H: FT Authentication Request
+    H->>NL: add an unassociated STA (NL80211_CMD_NEW_STATION)
+    NL->>CFG: ieee80211_add_station()
+    CFG->>SI: sta_info_insert()
+    SI->>DRV: drv_sta_state() up to the STA's current state
+    Note over SI,DRV: The STA is uploaded to the driver, WLAN_STA_ASSOC is clear
+    Note over H,CFG: FT over DS skips this step. Without a driver STA the key below gets -ENOENT with or without this patch
+    H->>H: wpa_ft_install_ptk(retry=0)
+    H->>NL: NL80211_CMD_NEW_KEY, pairwise PTK for the STA
     NL->>CFG: ieee80211_add_key()
-    CFG->>CFG: sta_info_get_bss() finds STA entry
+    CFG->>CFG: sta_info_get_bss() finds the STA entry
 
-    alt old behavior or a SW_CRYPTO_CONTROL driver
-        CFG->>CFG: WLAN_STA_ASSOC is still clear
-        CFG->>KEY: free unused key object
-        CFG-->>NL: return -ENOENT
+    alt old behavior, or a SW_CRYPTO_CONTROL driver, or a non-AP or non-pairwise key
+        CFG->>CFG: WLAN_STA_ASSOC is clear and deferral is not allowed
+        CFG->>KEY: ieee80211_key_free_unused()
+        CFG-->>NL: -ENOENT
         NL-->>H: key addition failed
-        H-->>H: retry depends on userspace timing
-        alt retry happens after ASSOC
-            H->>NL: Install pairwise PTK again
-            NL->>CFG: ieee80211_add_key()
-            CFG->>KEY: create key and upload normally
-            KEY->>DRV: set_key()
-        else retry is too late or missing
-            H-->>STA: roam may fail, especially with WPA3/PMF
-        end
-    else patched automatic-fallback path
-        CFG->>CFG: AP/AP_VLAN pairwise key with software fallback
-        CFG->>KEY: mark KEY_FLAG_DEFERRED_HW_UPLOAD
-        CFG->>KEY: ieee80211_key_link() prepares key for STA
-        KEY->>KEY: ieee80211_key_enable_hw_accel()
-        KEY->>KEY: skip set_key() and use normal software fallback
-        KEY->>KEY: publish stored key in mac80211
-        CFG-->>NL: return success after storing key
-        NL-->>H: key request succeeds
-        SI->>DRV: drv_sta_state() AUTH to ASSOC
-        DRV-->>SI: station transition succeeds
+        H->>H: tk_already_set stays false
+    else patched path: AP/AP_VLAN pairwise key with automatic software fallback
+        CFG->>CFG: set KEY_FLAG_DEFERRED_HW_UPLOAD, RX_MGMT only if WLAN_STA_MFP is already set
+        CFG->>KEY: ieee80211_key_link()
+        KEY->>KEY: check the cipher and key reinstallation, SPP_AMSDU only if already known
+        KEY->>KEY: ieee80211_key_enable_hw_accel() skips set_key()
+        KEY->>KEY: software-capable cipher, so return 0 for software crypto
+        KEY->>KEY: publish the key in sta->ptk[] and select it for TX
+        CFG-->>NL: 0
+        NL-->>H: key installed
+        H->>H: tk_already_set = true
+    end
+
+    H->>STA: FT Authentication Response
+    STA->>H: Reassociation Request
+    H->>NL: add_associated_sta(): NL80211_CMD_SET_STATION with association parameters
+    NL->>CFG: ieee80211_change_station()
+    CFG->>CFG: sta_apply_parameters() sets WLAN_STA_MFP, sta.spp_amsdu, and capabilities
+    CFG->>SI: sta_apply_auth_flags() moves the STA to ASSOC last
+    SI->>DRV: drv_sta_state() AUTH to ASSOC
+
+    alt the driver rejects the transition
+        DRV-->>SI: error
+        SI-->>CFG: error, WLAN_STA_ASSOC stays clear
+        CFG-->>NL: error
+        NL-->>H: SET_STATION fails
+        H->>STA: Reassociation Response, AP_UNABLE_TO_HANDLE_NEW_STA
+        Note over KEY: A deferred key stays marked and in software crypto until it is freed
+    else the driver accepts the transition
+        DRV-->>SI: 0
         SI->>SI: set WLAN_STA_ASSOC
-        SI->>KEY: ieee80211_upload_deferred_sta_keys(sta)
-        KEY->>KEY: scan sta->ptk[] for explicitly deferred keys
-        KEY->>KEY: refresh RX_MGMT and SPP_AMSDU, publish with WRITE_ONCE()
-        KEY->>KEY: clear deferred marker
-        KEY->>KEY: retry ieee80211_key_enable_hw_accel()
-        alt driver-side station is ready
-            KEY->>DRV: set_key()
-            DRV-->>KEY: key uploaded to hardware
-        else hardware upload fails or is unsupported
-            KEY->>KEY: retain the normal software fallback
+        opt patched path
+            SI->>KEY: ieee80211_upload_deferred_sta_keys(sta)
+            KEY->>KEY: scan sta->ptk[] for keys marked deferred
+            KEY->>KEY: recompute RX_MGMT and SPP_AMSDU, publish with WRITE_ONCE()
+            KEY->>KEY: clear the deferred marker
+            KEY->>KEY: ieee80211_key_enable_hw_accel()
+            alt set_key() returns 0
+                KEY->>DRV: set_key()
+                DRV-->>KEY: 0, hardware crypto
+            else set_key() returns 1 or an error
+                KEY->>DRV: set_key()
+                DRV-->>KEY: 1 or error
+                KEY->>KEY: keep software crypto
+            else the driver has no set_key()
+                KEY->>KEY: keep software crypto
+            end
         end
-        KEY-->>SI: ASSOC retry completes
+        SI-->>CFG: 0
+        CFG-->>NL: 0
+        NL-->>H: SET_STATION succeeds
+        H->>STA: Reassociation Response
+        H->>H: TX status for the response raises WPA_ASSOC_FT
+        H->>H: wpa_ft_install_ptk(retry=1)
+        alt tk_already_set (patched path)
+            H->>H: skip, the PTK is already installed
+        else first install failed (old behavior)
+            Note over STA,DRV: Until this point the AP holds no PTK for the STA, so protected frames from the STA are dropped
+            H->>NL: NL80211_CMD_NEW_KEY again
+            NL->>CFG: ieee80211_add_key()
+            CFG->>KEY: WLAN_STA_ASSOC is set, ieee80211_key_link()
+            alt set_key() returns 0
+                KEY->>DRV: set_key()
+                DRV-->>KEY: 0, hardware crypto
+                CFG-->>NL: 0
+            else set_key() returns 1
+                KEY->>DRV: set_key()
+                DRV-->>KEY: 1, software crypto permitted by the driver
+                CFG-->>NL: 0
+            else error from a driver without SW_CRYPTO_CONTROL
+                KEY->>DRV: set_key()
+                DRV-->>KEY: error
+                KEY->>KEY: automatic software crypto
+                CFG-->>NL: 0
+            else the driver has no set_key()
+                KEY->>KEY: automatic software crypto
+                CFG-->>NL: 0
+            else error from a SW_CRYPTO_CONTROL driver
+                KEY->>DRV: set_key()
+                DRV-->>KEY: error
+                KEY-->>CFG: -EINVAL, key freed
+                CFG-->>NL: -EINVAL
+                NL-->>H: key addition failed again
+            end
+        end
     end
 ```
 
-## State machine
+### State machine: one pairwise key
 
 ```mermaid
 stateDiagram-v2
-    [*] --> NoStation
-    NoStation --> PreAssoc: STA entry created
+    [*] --> Requested: NL80211_CMD_NEW_KEY with a STA address
 
-    PreAssoc --> OldRejected: old add_key before ASSOC
-    OldRejected --> RetryNeeded: -ENOENT returned to hostapd
-    RetryNeeded --> UploadAfterRetry: userspace retries after ASSOC
-    RetryNeeded --> RoamFailed: retry missing or too late
+    Requested --> Rejected: no STA entry, -ENOENT
+    Requested --> Rejected: before ASSOC and not eligible, -ENOENT
+    Requested --> Failed: cipher differs from the other PTK slot, -EOPNOTSUPP
+    Requested --> Failed: deferred key with a driver-only cipher, -EINVAL
+    Requested --> KeptExisting: identical to the installed key, returns 0
+    Requested --> Deferred: eligible AP/AP_VLAN pairwise key before ASSOC
+    Requested --> Uploading: STA already associated
 
-    PreAssoc --> OldRejected: SW_CRYPTO_CONTROL, non-AP, or non-pairwise keeps old gate
-    PreAssoc --> DeferredInMac80211: eligible AP/AP_VLAN pairwise add_key
-    DeferredInMac80211 --> WaitingForAssoc: hardware upload skipped
-    WaitingForAssoc --> AssocUploadAttempt: driver AUTH to ASSOC succeeds, key flags refreshed
-    AssocUploadAttempt --> UploadedToHardware: driver accepts set_key()
-    AssocUploadAttempt --> SoftwareCrypto: hardware upload unavailable
+    Rejected --> Requested: hostapd retries after ASSOC on WPA_ASSOC_FT
 
-    UploadAfterRetry --> UploadedToHardware
-    UploadedToHardware --> RoamComplete
-    SoftwareCrypto --> RoamComplete
-    RoamComplete --> [*]
-    RoamFailed --> [*]
+    state Deferred {
+        [*] --> SoftwareOnly: marker set, set_key() skipped, key published in sta->ptk[]
+        SoftwareOnly --> SoftwareOnly: hardware restart or resume re-enables keys, set_key() still skipped
+        SoftwareOnly --> SoftwareOnly: driver rejects AUTH to ASSOC, WLAN_STA_ASSOC stays clear
+    }
+
+    Deferred --> Freed: key deleted, replaced, or STA removed before ASSOC, no driver call
+    Deferred --> Refreshing: driver accepts AUTH to ASSOC and WLAN_STA_ASSOC is set
+    Refreshing --> Uploading: RX_MGMT and SPP_AMSDU recomputed with WRITE_ONCE(), marker cleared
+
+    Uploading --> Hardware: set_key() returns 0
+    Uploading --> Software: set_key() returns 1
+    Uploading --> Software: set_key() fails or is missing, driver without SW_CRYPTO_CONTROL
+    Uploading --> Software: rekey replaces a PTK that was not in hardware, set_key() skipped
+    Uploading --> Failed: SW_CRYPTO_CONTROL driver refuses on a new request, -EINVAL
+
+    Hardware --> Freed: key deleted, replaced, or STA removed, set_key(DISABLE_KEY)
+    Software --> Freed: key deleted, replaced, or STA removed
+
+    KeptExisting --> [*]
+    Failed --> [*]
+    Freed --> [*]
 ```
+
+A rejected request does not create a key object; hostapd's retry after ASSOC
+is a new request. The deferred upload runs only on the AUTH-to-ASSOC
+transition, so a failed ASSOC-time `set_key()` is not retried until the key is
+installed again.
 
 ## What changed in the patch
 
