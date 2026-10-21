@@ -98,9 +98,13 @@ together:
 - the state machine follows one pairwise key from the request until it is
   freed, including the paths that do not occur during a normal roam.
 
-They describe the stable patch in `patches/<release>/subsys/`. The `main` copy
-also exempts Enhanced Privacy Protection (EPP) peers from the ASSOC gate, as
-newer kernels do; the diagrams leave that case out.
+The diagrams follow OpenWrt 25.12.6: the patch in `patches/25.12.6/subsys/`,
+mac80211 from backports 6.18.55, and hostapd `ca266cc24d87` (2025-08-26) as
+OpenWrt 25.12.6 builds it. The mac80211 side also holds for 25.12.5: its patch
+makes the same change, and the mac80211 functions shown are unchanged between
+backports 6.18.26 and 6.18.55. The `main` copy also exempts Enhanced Privacy Protection
+(EPP) peers from the ASSOC gate, as newer kernels do; the diagrams leave that
+case out.
 
 ### Flowchart: one key request
 
