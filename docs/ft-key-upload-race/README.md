@@ -98,7 +98,8 @@ flowchart TD
     REJECT["Keep existing gate: reject with -ENOENT"]
     STORE["Patched behavior: accept and store key in mac80211"]
     SKIP_HW["Skip initial hardware upload while STA is not associated"]
-    ASSOC_EVENT["STA transitions to ASSOC"]
+    ASSOC_EVENT["Driver AUTH-to-ASSOC transition succeeds and WLAN_STA_ASSOC is set"]
+    REFRESH["Refresh RX_MGMT and SPP_AMSDU key flags and clear the deferred marker"]
     UPLOAD["Retry ieee80211_key_enable_hw_accel()"]
     DRIVER["Driver receives set_key() after its state transition"]
     SOFTWARE["Keep using the normal software fallback if upload fails"]
@@ -115,7 +116,8 @@ flowchart TD
     SWCTRL -->|"no"| STORE
     STORE --> SKIP_HW
     SKIP_HW --> ASSOC_EVENT
-    ASSOC_EVENT --> UPLOAD
+    ASSOC_EVENT --> REFRESH
+    REFRESH --> UPLOAD
     UPLOAD -->|"success"| DRIVER
     UPLOAD -->|"unsupported or failed"| SOFTWARE
     DRIVER --> DONE
@@ -163,9 +165,13 @@ sequenceDiagram
         KEY->>KEY: publish stored key in mac80211
         CFG-->>NL: return success after storing key
         NL-->>H: key request succeeds
-        SI->>SI: station moves AUTH to ASSOC
+        SI->>DRV: drv_sta_state() AUTH to ASSOC
+        DRV-->>SI: station transition succeeds
+        SI->>SI: set WLAN_STA_ASSOC
         SI->>KEY: ieee80211_upload_deferred_sta_keys(sta)
         KEY->>KEY: scan sta->ptk[] for explicitly deferred keys
+        KEY->>KEY: refresh RX_MGMT and SPP_AMSDU, publish with WRITE_ONCE()
+        KEY->>KEY: clear deferred marker
         KEY->>KEY: retry ieee80211_key_enable_hw_accel()
         alt driver-side station is ready
             KEY->>DRV: set_key()
@@ -189,10 +195,10 @@ stateDiagram-v2
     RetryNeeded --> UploadAfterRetry: userspace retries after ASSOC
     RetryNeeded --> RoamFailed: retry missing or too late
 
-    PreAssoc --> OldRejected: SW_CRYPTO_CONTROL retains old gate
+    PreAssoc --> OldRejected: SW_CRYPTO_CONTROL, non-AP, or non-pairwise keeps old gate
     PreAssoc --> DeferredInMac80211: eligible AP/AP_VLAN pairwise add_key
     DeferredInMac80211 --> WaitingForAssoc: hardware upload skipped
-    WaitingForAssoc --> AssocUploadAttempt: AUTH to ASSOC
+    WaitingForAssoc --> AssocUploadAttempt: driver AUTH to ASSOC succeeds, key flags refreshed
     AssocUploadAttempt --> UploadedToHardware: driver accepts set_key()
     AssocUploadAttempt --> SoftwareCrypto: hardware upload unavailable
 
