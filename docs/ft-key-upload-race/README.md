@@ -214,8 +214,8 @@ sequenceDiagram
     H->>NL: add an unassociated STA (NL80211_CMD_NEW_STATION)
     NL->>CFG: ieee80211_add_station()
     CFG->>SI: sta_info_insert()
-    SI->>DRV: drv_sta_state() up to the STA's current state
-    Note over SI,DRV: The STA is uploaded to the driver, WLAN_STA_ASSOC is clear
+    SI->>DRV: drv_sta_state() NOTEXIST to NONE
+    Note over SI,DRV: The STA is uploaded to the driver and stays in NONE. hostapd masks AUTHENTICATED and ASSOCIATED without setting them, so WLAN_STA_AUTH and WLAN_STA_ASSOC are clear
     Note over H,CFG: FT over DS skips this step. Without a driver STA the key below gets -ENOENT with or without this patch
     H->>H: wpa_ft_install_ptk(retry=0)
     H->>NL: NL80211_CMD_NEW_KEY, pairwise PTK for the STA
@@ -245,17 +245,21 @@ sequenceDiagram
     H->>NL: add_associated_sta(): NL80211_CMD_SET_STATION with association parameters
     NL->>CFG: ieee80211_change_station()
     CFG->>CFG: sta_apply_parameters() sets WLAN_STA_MFP, sta.spp_amsdu, and capabilities
-    CFG->>SI: sta_apply_auth_flags() moves the STA to ASSOC last
+    CFG->>SI: sta_apply_auth_flags() moves the STA NONE to AUTH, then AUTH to ASSOC
+    SI->>DRV: drv_sta_state() NONE to AUTH
+    DRV-->>SI: 0
+    SI->>SI: set WLAN_STA_AUTH
+    Note over SI,DRV: If the driver rejects NONE to AUTH, SET_STATION fails before AUTH to ASSOC is tried, as in the rejection branch below
     SI->>DRV: drv_sta_state() AUTH to ASSOC
 
-    alt the driver rejects the transition
+    alt the driver rejects AUTH to ASSOC
         DRV-->>SI: error
         SI-->>CFG: error, WLAN_STA_ASSOC stays clear
         CFG-->>NL: error
         NL-->>H: SET_STATION fails
         H->>STA: Reassociation Response, AP_UNABLE_TO_HANDLE_NEW_STA
         Note over KEY: A deferred key stays marked and in software crypto until it is freed
-    else the driver accepts the transition
+    else the driver accepts AUTH to ASSOC
         DRV-->>SI: 0
         SI->>SI: set WLAN_STA_ASSOC
         opt patched path
@@ -334,7 +338,7 @@ stateDiagram-v2
     state Deferred {
         [*] --> SoftwareOnly: marker set, set_key() skipped, key published in sta->ptk[]
         SoftwareOnly --> SoftwareOnly: hardware restart or resume re-enables keys, set_key() still skipped
-        SoftwareOnly --> SoftwareOnly: driver rejects AUTH to ASSOC, WLAN_STA_ASSOC stays clear
+        SoftwareOnly --> SoftwareOnly: driver rejects NONE to AUTH or AUTH to ASSOC, WLAN_STA_ASSOC stays clear
     }
 
     Deferred --> Freed: key deleted, replaced, or STA removed before ASSOC, no driver call
