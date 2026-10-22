@@ -4,25 +4,9 @@ on:
   push:
     branches:
       - main
-    paths: &ci_paths
-      - renovate.json
-      - .github/workflows/**
-      - .dockerignore
-      - .hadolint.yaml
-      - README.md
-      - devices/**
-      - docker/**
-      - docs/**
-      - local-feeds/**
-      - locks/**
-      - mise.lock
-      - mise.toml
-      - patches/**
-      - scripts/**
   pull_request:
     branches:
       - main
-    paths: *ci_paths
   workflow_dispatch:
 
 permissions:
@@ -35,63 +19,62 @@ concurrency:
 jobs:
   shell:
     name: Shell syntax and lint
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Set up mise
-        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
-        with:
-          # Keep mise compatible with the provenance metadata in mise.lock.
-          version: &mise_version 2026.10.14
-          install_args: "github:kjanat/actionlint hadolint shellcheck"
-
-      - name: Validate shell scripts and workflow
-        env:
-          MISE_AUTO_INSTALL: 0
-        run: mise run check:shell
+    uses: AndreaCovelli/repo-baseline/.github/workflows/check.yml@a3cd314a40868370e41af02ecf02af60df5614ee # v1.0.1
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      task: check:shell
+      install-args: github:kjanat/actionlint hadolint shellcheck
+      timeout-minutes: 10
+      paths: &ci_paths |
+        renovate.json
+        .github/workflows/**
+        .dockerignore
+        .hadolint.yaml
+        README.md
+        devices/**
+        docker/**
+        docs/**
+        local-feeds/**
+        locks/**
+        mise.lock
+        mise.toml
+        patches/**
+        scripts/**
 
   repository-metadata:
     name: Lock and patch consistency
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Set up mise
-        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
-        with:
-          version: *mise_version
-          install: false
-          cache: false
-
-      - name: Validate repository metadata
-        env:
-          MISE_AUTO_INSTALL: 0
-        run: mise run check:metadata
+    uses: AndreaCovelli/repo-baseline/.github/workflows/check.yml@a3cd314a40868370e41af02ecf02af60df5614ee # v1.0.1
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      task: check:metadata
+      install-args: shellcheck
+      timeout-minutes: 5
+      paths: *ci_paths
 
   links:
     name: Markdown links
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    uses: AndreaCovelli/repo-baseline/.github/workflows/check.yml@a3cd314a40868370e41af02ecf02af60df5614ee # v1.0.1
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      task: check:links
+      install-args: lychee
+      timeout-minutes: 10
+      paths: *ci_paths
 
+  validate:
+    name: Validate
+    needs: [shell, repository-metadata, links]
+    if: always()
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
     steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Set up mise
-        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
-        with:
-          version: *mise_version
-          install_args: lychee
-
-      - name: Check Markdown links
+      - name: Check CI results
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-          MISE_AUTO_INSTALL: 0
-        run: mise run check:links
+          NEEDS: ${{ toJSON(needs) }}
+        run: jq -e 'all(.[]; .result == "success" or .result == "skipped")' <<<"$NEEDS"
